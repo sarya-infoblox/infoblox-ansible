@@ -451,10 +451,11 @@ class WapiModule(WapiBase):
                     text_obj = json.loads(text_obj)
                     txt = text_obj['new_text']
                 except Exception:
-                    (result, exc) = safe_eval(text_obj, dict(), include_exceptions=True)
-                    if exc is not None:
+                    try:
+                        result = safe_eval(text_obj)
+                        txt = result['new_text']
+                    except Exception:
                         raise TypeError('unable to evaluate string as dictionary')
-                    txt = result['new_text']
                 proposed_object['text'] = txt
 
         # checks if the name's field has been updated
@@ -896,11 +897,12 @@ class WapiModule(WapiBase):
                             txt = text_obj['old_text']
                             old_text_exists = True
                         except Exception:
-                            (result, exc) = safe_eval(text_obj, dict(), include_exceptions=True)
-                            if exc is not None:
+                            try:
+                                result = safe_eval(text_obj)
+                                txt = result['old_text']
+                                old_text_exists = True
+                            except Exception:
                                 raise TypeError('unable to evaluate string as dictionary')
-                            txt = result['old_text']
-                            old_text_exists = True
                     else:
                         txt = text_obj
                 except TypeError:
@@ -959,11 +961,12 @@ class WapiModule(WapiBase):
                         txt = text_obj['old_text']
                         old_text_exists = True
                     except Exception:
-                        (result, exc) = safe_eval(text_obj, dict(), include_exceptions=True)
-                        if exc is not None:
+                        try:
+                            result = safe_eval(text_obj)
+                            txt = result['old_text']
+                            old_text_exists = True
+                        except Exception:
                             raise TypeError('unable to evaluate string as dictionary')
-                        txt = result['old_text']
-                        old_text_exists = True
                 else:
                     txt = text_obj
             except TypeError:
