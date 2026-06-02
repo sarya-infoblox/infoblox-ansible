@@ -187,6 +187,13 @@ options:
         of this object.  The provided text string will be configured on the
         object instance.
     type: str
+  ddns_protected:
+    description:
+      - Determines if the DDNS updates for this record are allowed. When set
+        to C(true), the record is protected from DDNS updates. Corresponds
+        to the NIOS WAPI C(ddns_protected) field on a host record object.
+    type: bool
+    default: false
   state:
     description:
       - Configures the intended state of the instance of the object on
@@ -380,6 +387,20 @@ EXAMPLES = '''
       username: admin
       password: admin
     connection: local
+
+- name: Create a DDNS-protected host record
+  infoblox.nios_modules.nios_host_record:
+    name: host.ansible.com
+    ipv4:
+      - address: 192.168.10.1
+    ddns_protected: true
+    comment: "DDNS protection enabled - issue #295"
+    state: present
+    provider:
+      host: "{{ inventory_hostname_short }}"
+      username: admin
+      password: admin
+  connection: local
 '''
 
 RETURN = ''' # '''
@@ -452,6 +473,7 @@ def main():
 
         extattrs=dict(type='dict'),
         comment=dict(),
+        ddns_protected=dict(type='bool', default=False, required=False),
     )
 
     argument_spec = dict(

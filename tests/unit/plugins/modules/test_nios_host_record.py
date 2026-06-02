@@ -157,3 +157,112 @@ class TestNiosHostRecordModule(TestNiosModule):
         wapi.update_object.assert_called_once_with(
             ref, {'comment': 'comment', 'name': 'default'}
         )
+
+    # ------------------------------------------------------------------
+    # Tests for issue #295 – ddns_protected support in nios_host_record
+    # ------------------------------------------------------------------
+
+    def test_nios_host_record_create_with_ddns_protected(self):
+        """Creating a host record with ddns_protected=True must pass the field
+        to WAPI (issue #295 – field was previously absent from ib_spec)."""
+        self.module.params = {
+            'provider': None,
+            'state': 'present',
+            'name': 'host295.ansible.com',
+            'ddns_protected': True,
+            'comment': 'issue-295 fix',
+            'extattrs': None,
+        }
+
+        test_object = None
+        test_spec = {
+            "name": {"ib_req": True},
+            "ddns_protected": {},
+            "comment": {},
+            "extattrs": {},
+        }
+
+        wapi = self._get_wapi(test_object)
+        res = wapi.run('testobject', test_spec)
+
+        self.assertTrue(res['changed'])
+        wapi.create_object.assert_called_once_with(
+            'testobject',
+            {'name': 'host295.ansible.com', 'ddns_protected': True, 'comment': 'issue-295 fix'}
+        )
+
+    def test_nios_host_record_update_ddns_protected(self):
+        """Updating ddns_protected on an existing host record must call
+        update_object with the new value (issue #295)."""
+        self.module.params = {
+            'provider': None,
+            'state': 'present',
+            'name': 'host295.ansible.com',
+            'ddns_protected': True,
+            'comment': 'test comment',
+            'extattrs': None,
+        }
+
+        ref = "record:host/ZG5zLm5ldHdvcmtfdmlldyQw:host295.ansible.com/true"
+        test_object = [
+            {
+                "_ref": ref,
+                "name": "host295.ansible.com",
+                "ddns_protected": False,
+                "comment": "test comment",
+                "extattrs": {},
+            }
+        ]
+
+        test_spec = {
+            "name": {"ib_req": True},
+            "ddns_protected": {},
+            "comment": {},
+            "extattrs": {},
+        }
+
+        wapi = self._get_wapi(test_object)
+        res = wapi.run('testobject', test_spec)
+
+        self.assertTrue(res['changed'])
+        wapi.update_object.assert_called_once_with(
+            ref,
+            {'name': 'host295.ansible.com', 'ddns_protected': True, 'comment': 'test comment'}
+        )
+
+    def test_nios_host_record_ddns_protected_default_false(self):
+        """When ddns_protected is omitted it defaults to False and must NOT be
+        sent as True to WAPI; an existing record with ddns_protected=False
+        should produce no change (issue #295)."""
+        self.module.params = {
+            'provider': None,
+            'state': 'present',
+            'name': 'host295.ansible.com',
+            'ddns_protected': False,
+            'comment': 'test comment',
+            'extattrs': None,
+        }
+
+        ref = "record:host/ZG5zLm5ldHdvcmtfdmlldyQw:host295.ansible.com/true"
+        test_object = [
+            {
+                "_ref": ref,
+                "name": "host295.ansible.com",
+                "ddns_protected": False,
+                "comment": "test comment",
+                "extattrs": {},
+            }
+        ]
+
+        test_spec = {
+            "name": {"ib_req": True},
+            "ddns_protected": {},
+            "comment": {},
+            "extattrs": {},
+        }
+
+        wapi = self._get_wapi(test_object)
+        res = wapi.run('testobject', test_spec)
+
+        self.assertFalse(res['changed'])
+        wapi.update_object.assert_not_called()
