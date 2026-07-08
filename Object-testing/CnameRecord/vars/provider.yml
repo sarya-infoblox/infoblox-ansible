@@ -1,0 +1,7 @@
+---
+nios_provider:
+  host: 172.28.82.33
+  username: admin
+  password: Infoblox@123
+  wapi_version: "2.12.3"
+  ssl_verify: false

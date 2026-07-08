@@ -1,0 +1,38 @@
+---
+- name: "Scenario 08 - Idempotent delete of non-existent CNAME"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    # Ensure the record truly does not exist
+    - name: "PRE | Make sure alias08 does not exist"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias08.ansible.test
+        canonical: target08.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "TEST | Delete non-existent CNAME (must be idempotent)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias08.ansible.test
+        canonical: target08.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+      register: result_absent
+
+    - name: "ASSERT | Delete of absent record reports not changed"
+      ansible.builtin.assert:
+        that: not result_absent.changed
+        success_msg: "PASS - delete of absent CNAME reported changed=false"
+        fail_msg: "FAIL - delete of absent CNAME unexpectedly reported changed=true"

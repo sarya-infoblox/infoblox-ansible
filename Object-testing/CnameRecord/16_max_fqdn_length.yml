@@ -1,0 +1,72 @@
+---
+- name: "Scenario 16 - CNAME alias at near-max FQDN length (253 chars)"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  # DNS max FQDN = 253 chars (without trailing dot).
+  # Zone = ansible.test (11 chars + 1 dot = 12 chars as suffix including the label separator).
+  # Label budget before zone = 253 - 1 (dot) - 11 (ansible.test) = 241 chars of labels.
+  # We use a single label of 63 chars (max label) + dot + another label to fill remaining space.
+  # Concretely: label "a" * 63 chars + "." + "b" * (241-63-1) = "b" * 177 + ".ansible.test"
+  # Total: 63 + 1 + 177 + 1 + 11 = 253. Valid.
+  vars:
+    long_label_a: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"  # 63 a's
+    long_label_b: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"  # 177 b's
+    max_alias: "{{ long_label_a }}.{{ long_label_b }}.ansible.test"
+
+  tasks:
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove max-length CNAME if leftover"
+      infoblox.nios_modules.nios_cname_record:
+        name: "{{ max_alias }}"
+        canonical: target16.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+      ignore_errors: true
+
+    - name: "TEST | Create CNAME with near-max FQDN alias"
+      infoblox.nios_modules.nios_cname_record:
+        name: "{{ max_alias }}"
+        canonical: target16.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_create
+
+    - name: "ASSERT | Max-length alias create reports changed"
+      ansible.builtin.assert:
+        that: result_create.changed
+        success_msg: "PASS - max-length FQDN CNAME created"
+        fail_msg: "FAIL - max-length FQDN CNAME create did not report changed"
+
+    - name: "TEST | Idempotency on max-length alias"
+      infoblox.nios_modules.nios_cname_record:
+        name: "{{ max_alias }}"
+        canonical: target16.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_idem
+
+    - name: "ASSERT | Max-length alias re-apply is idempotent"
+      ansible.builtin.assert:
+        that: not result_idem.changed
+        success_msg: "PASS - max-length FQDN CNAME is idempotent"
+        fail_msg: "FAIL - max-length FQDN CNAME spuriously changed"
+
+    - name: "CLEANUP | Remove max-length CNAME"
+      infoblox.nios_modules.nios_cname_record:
+        name: "{{ max_alias }}"
+        canonical: target16.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"

@@ -1,0 +1,39 @@
+---
+- name: "Scenario 14 - Missing required parameters cause module failure"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    # Test 1: missing canonical
+    - name: "TEST | Invoke module without canonical parameter"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias14.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_no_canonical
+      ignore_errors: true
+
+    - name: "ASSERT | Missing canonical causes failure"
+      ansible.builtin.assert:
+        that: result_no_canonical.failed
+        success_msg: "PASS - missing canonical correctly caused module failure"
+        fail_msg: "FAIL - missing canonical did not cause a failure"
+
+    # Test 2: missing name
+    - name: "TEST | Invoke module without name parameter"
+      infoblox.nios_modules.nios_cname_record:
+        canonical: target14.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_no_name
+      ignore_errors: true
+
+    - name: "ASSERT | Missing name causes failure"
+      ansible.builtin.assert:
+        that: result_no_name.failed
+        success_msg: "PASS - missing name correctly caused module failure"
+        fail_msg: "FAIL - missing name did not cause a failure"

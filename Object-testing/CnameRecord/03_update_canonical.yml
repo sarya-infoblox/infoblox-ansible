@@ -1,0 +1,83 @@
+---
+- name: "Scenario 03 - Update canonical (target) of existing CNAME"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove CNAME if leftover"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias03.ansible.test
+        canonical: target03a.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Also remove under new canonical in case leftover"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias03.ansible.test
+        canonical: target03b.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "TEST | Create CNAME with initial canonical"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias03.ansible.test
+        canonical: target03a.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_create
+
+    - name: "ASSERT | Create reports changed"
+      ansible.builtin.assert:
+        that: result_create.changed
+        success_msg: "PASS - initial create reported changed=true"
+        fail_msg: "FAIL - initial create did not report changed"
+
+    - name: "TEST | Update canonical to new target"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias03.ansible.test
+        canonical: target03b.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_update
+
+    - name: "ASSERT | Update canonical reports changed"
+      ansible.builtin.assert:
+        that: result_update.changed
+        success_msg: "PASS - canonical update reported changed=true"
+        fail_msg: "FAIL - canonical update did not report changed"
+
+    - name: "TEST | Re-apply updated canonical (idempotency)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias03.ansible.test
+        canonical: target03b.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_idempotent
+
+    - name: "ASSERT | Re-apply updated canonical must be idempotent"
+      ansible.builtin.assert:
+        that: not result_idempotent.changed
+        success_msg: "PASS - updated canonical re-apply is idempotent"
+        fail_msg: "FAIL - updated canonical re-apply spuriously changed"
+
+    - name: "CLEANUP | Remove test CNAME"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias03.ansible.test
+        canonical: target03b.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"

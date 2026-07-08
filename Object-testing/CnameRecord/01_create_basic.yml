@@ -1,0 +1,66 @@
+---
+- name: "Scenario 01 - Create basic CNAME record and verify idempotency"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    # ── Prerequisites ──────────────────────────────────────────────────────────
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    # ── Cleanup leftover ───────────────────────────────────────────────────────
+    - name: "CLEANUP | Remove CNAME if leftover from prior run"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias01.ansible.test
+        canonical: target01.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    # ── Scenario ───────────────────────────────────────────────────────────────
+    - name: "TEST | Create CNAME record (first run)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias01.ansible.test
+        canonical: target01.ansible.test
+        view: default
+        comment: "Created by scenario 01"
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_create
+
+    - name: "ASSERT | First create must report changed"
+      ansible.builtin.assert:
+        that: result_create.changed
+        success_msg: "PASS - first create reported changed=true"
+        fail_msg: "FAIL - first create did not report changed"
+
+    - name: "TEST | Re-apply identical CNAME record (idempotency)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias01.ansible.test
+        canonical: target01.ansible.test
+        view: default
+        comment: "Created by scenario 01"
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_idempotent
+
+    - name: "ASSERT | Second run must report not changed"
+      ansible.builtin.assert:
+        that: not result_idempotent.changed
+        success_msg: "PASS - idempotent run reported changed=false"
+        fail_msg: "FAIL - idempotent run unexpectedly reported changed=true"
+
+    # ── Cleanup ────────────────────────────────────────────────────────────────
+    - name: "CLEANUP | Remove test CNAME"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias01.ansible.test
+        canonical: target01.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"

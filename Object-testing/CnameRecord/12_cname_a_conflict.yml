@@ -1,0 +1,72 @@
+---
+- name: "Scenario 12 - CNAME at same owner as A record must fail (WAPI conflict)"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove A record if leftover"
+      infoblox.nios_modules.nios_a_record:
+        name: conflict12.ansible.test
+        ipv4addr: 192.0.2.12
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove CNAME if leftover"
+      infoblox.nios_modules.nios_cname_record:
+        name: conflict12.ansible.test
+        canonical: target12.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "SETUP | Create A record at conflict12.ansible.test"
+      infoblox.nios_modules.nios_a_record:
+        name: conflict12.ansible.test
+        ipv4addr: 192.0.2.12
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "TEST | Attempt CNAME at same owner as A record (must fail)"
+      infoblox.nios_modules.nios_cname_record:
+        name: conflict12.ansible.test
+        canonical: target12.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_conflict
+      ignore_errors: true
+
+    - name: "ASSERT | CNAME create at A record owner must fail"
+      ansible.builtin.assert:
+        that: result_conflict.failed
+        success_msg: "PASS - WAPI correctly rejected CNAME at same owner as A record"
+        fail_msg: "FAIL - WAPI allowed CNAME at same owner as A record (RFC violation)"
+
+    # ── Cleanup ────────────────────────────────────────────────────────────────
+    - name: "CLEANUP | Remove A record"
+      infoblox.nios_modules.nios_a_record:
+        name: conflict12.ansible.test
+        ipv4addr: 192.0.2.12
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove CNAME if it was accidentally created"
+      infoblox.nios_modules.nios_cname_record:
+        name: conflict12.ansible.test
+        canonical: target12.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+      ignore_errors: true

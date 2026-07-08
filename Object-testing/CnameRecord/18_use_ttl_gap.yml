@@ -1,0 +1,95 @@
+---
+- name: "Scenario 18 - use_ttl field gap: observe WAPI TTL storage behavior"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  # WAPI record:cname has both 'ttl' and 'use_ttl' fields.
+  # The nios_cname_record module exposes 'ttl' (int) but NOT 'use_ttl' (bool).
+  # When use_ttl=false (default), WAPI ignores the ttl field and inherits zone TTL.
+  # When use_ttl=true, WAPI stores the ttl value.
+  # This scenario tests whether setting ttl via the module has any observable effect,
+  # and documents the gap. The assertion is intentionally lenient to record behavior.
+
+  tasks:
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove CNAME if leftover"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias18.ansible.test
+        canonical: target18.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "TEST | Create CNAME with ttl=300 (use_ttl not set by module)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias18.ansible.test
+        canonical: target18.ansible.test
+        view: default
+        ttl: 300
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_with_ttl
+
+    - name: "ASSERT | Create with ttl=300 reports changed"
+      ansible.builtin.assert:
+        that: result_with_ttl.changed
+        success_msg: "PASS - create with ttl=300 reported changed=true"
+        fail_msg: "FAIL - create with ttl=300 did not report changed"
+
+    - name: "TEST | Re-apply same ttl=300 (idempotency of ttl field)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias18.ansible.test
+        canonical: target18.ansible.test
+        view: default
+        ttl: 300
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_ttl_idem
+
+    - name: "OBSERVE | Record whether ttl re-apply is idempotent (gap: use_ttl not exposed)"
+      ansible.builtin.debug:
+        msg: >
+          ttl=300 re-apply changed={{ result_ttl_idem.changed }}.
+          NOTE: If use_ttl is not set to true by the module internally, WAPI may ignore ttl
+          entirely and this field may never trigger a diff. This is an unexposed field gap.
+
+    # Document: test changing from ttl=300 to no ttl (omit)
+    - name: "TEST | Apply without ttl (should inherit zone default)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias18.ansible.test
+        canonical: target18.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_no_ttl
+
+    - name: "OBSERVE | Record whether removing ttl triggers change"
+      ansible.builtin.debug:
+        msg: >
+          Removing explicit ttl changed={{ result_no_ttl.changed }}.
+          If use_ttl was never set, removing ttl should be a no-op.
+
+    - name: "CLEANUP | Remove test CNAME"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias18.ansible.test
+        canonical: target18.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "SUMMARY | use_ttl gap documentation"
+      ansible.builtin.debug:
+        msg: >
+          WAPI record:cname exposes 'use_ttl' (bool) which must be true for 'ttl' to be honored.
+          The nios_cname_record module does NOT expose 'use_ttl'.
+          Impact: explicit TTL values set via the module may be silently ignored by NIOS
+          unless the module internally forces use_ttl=true on PUT. Recommend adding 'use_ttl'
+          to the module's ib_spec as a bool option defaulting to true when ttl is set.

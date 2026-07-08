@@ -1,0 +1,24 @@
+---
+# Run all CNAME record test scenarios in order.
+# Usage (from Object-testing/CnameRecord/):
+#   export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+#   ansible-playbook run_all.yml
+
+- import_playbook: 01_create_basic.yml
+- import_playbook: 02_create_trailing_dot.yml
+- import_playbook: 03_update_canonical.yml
+- import_playbook: 04_rename_alias.yml
+- import_playbook: 05_update_comment_extattrs.yml
+- import_playbook: 06_ttl_set_unset.yml
+- import_playbook: 07_delete_existing.yml
+- import_playbook: 08_delete_absent_idempotent.yml
+- import_playbook: 09_idempotency_create.yml
+- import_playbook: 10_check_mode.yml
+- import_playbook: 11_split_horizon.yml
+- import_playbook: 12_cname_a_conflict.yml
+- import_playbook: 13_nonexistent_zone_error.yml
+- import_playbook: 14_missing_required_params.yml
+- import_playbook: 15_ea_filter_update.yml
+- import_playbook: 16_max_fqdn_length.yml
+- import_playbook: 17_case_normalization.yml
+- import_playbook: 18_use_ttl_gap.yml

@@ -1,0 +1,90 @@
+---
+- name: "Scenario 09 - Full idempotency with all fields set"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove CNAME if leftover"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias09.ansible.test
+        canonical: target09.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "TEST | First create with all fields"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias09.ansible.test
+        canonical: target09.ansible.test
+        view: default
+        ttl: 120
+        comment: "idempotency test"
+        extattrs:
+          Site:
+            value: "test"
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_first
+
+    - name: "ASSERT | First run changed"
+      ansible.builtin.assert:
+        that: result_first.changed
+        success_msg: "PASS - first run reported changed=true"
+        fail_msg: "FAIL - first run did not report changed"
+
+    - name: "TEST | Second run identical params (idempotency)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias09.ansible.test
+        canonical: target09.ansible.test
+        view: default
+        ttl: 120
+        comment: "idempotency test"
+        extattrs:
+          Site:
+            value: "test"
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_second
+
+    - name: "ASSERT | Second run not changed"
+      ansible.builtin.assert:
+        that: not result_second.changed
+        success_msg: "PASS - second identical run reported changed=false"
+        fail_msg: "FAIL - second identical run spuriously changed"
+
+    - name: "TEST | Third run identical params (idempotency confirmed)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias09.ansible.test
+        canonical: target09.ansible.test
+        view: default
+        ttl: 120
+        comment: "idempotency test"
+        extattrs:
+          Site:
+            value: "test"
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_third
+
+    - name: "ASSERT | Third run not changed"
+      ansible.builtin.assert:
+        that: not result_third.changed
+        success_msg: "PASS - third identical run reported changed=false"
+        fail_msg: "FAIL - third identical run spuriously changed"
+
+    - name: "CLEANUP | Remove test CNAME"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias09.ansible.test
+        canonical: target09.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"

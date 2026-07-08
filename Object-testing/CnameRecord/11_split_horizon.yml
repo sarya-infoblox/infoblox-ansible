@@ -1,0 +1,140 @@
+---
+- name: "Scenario 11 - Split-horizon: same alias in two views with different targets"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    # ── Prerequisites ──────────────────────────────────────────────────────────
+    - name: "PRE | Ensure zone ansible.test in default view"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "PRE | Ensure second DNS view ansible-test-view exists"
+      infoblox.nios_modules.nios_dns_view:
+        name: ansible-test-view
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "PRE | Ensure zone ansible.test in ansible-test-view"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: ansible-test-view
+        state: present
+        provider: "{{ nios_provider }}"
+
+    # ── Cleanup leftovers ─────────────────────────────────────────────────────
+    - name: "CLEANUP | Remove split11 from default view"
+      infoblox.nios_modules.nios_cname_record:
+        name: split11.ansible.test
+        canonical: internal11.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove split11 from ansible-test-view"
+      infoblox.nios_modules.nios_cname_record:
+        name: split11.ansible.test
+        canonical: external11.ansible.test
+        view: ansible-test-view
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    # ── Scenario ───────────────────────────────────────────────────────────────
+    - name: "TEST | Create CNAME in default view → internal target"
+      infoblox.nios_modules.nios_cname_record:
+        name: split11.ansible.test
+        canonical: internal11.ansible.test
+        view: default
+        comment: "split-horizon default"
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_default
+
+    - name: "ASSERT | Default view create reports changed"
+      ansible.builtin.assert:
+        that: result_default.changed
+        success_msg: "PASS - default view CNAME created"
+        fail_msg: "FAIL - default view CNAME create did not report changed"
+
+    - name: "TEST | Create same alias in ansible-test-view → external target"
+      infoblox.nios_modules.nios_cname_record:
+        name: split11.ansible.test
+        canonical: external11.ansible.test
+        view: ansible-test-view
+        comment: "split-horizon external"
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_external
+
+    - name: "ASSERT | External view create reports changed"
+      ansible.builtin.assert:
+        that: result_external.changed
+        success_msg: "PASS - ansible-test-view CNAME created"
+        fail_msg: "FAIL - ansible-test-view CNAME create did not report changed"
+
+    - name: "TEST | Idempotency check on default view"
+      infoblox.nios_modules.nios_cname_record:
+        name: split11.ansible.test
+        canonical: internal11.ansible.test
+        view: default
+        comment: "split-horizon default"
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_default_idem
+
+    - name: "ASSERT | Default view is idempotent"
+      ansible.builtin.assert:
+        that: not result_default_idem.changed
+        success_msg: "PASS - default view re-apply is idempotent"
+        fail_msg: "FAIL - default view re-apply spuriously changed"
+
+    - name: "TEST | Idempotency check on ansible-test-view"
+      infoblox.nios_modules.nios_cname_record:
+        name: split11.ansible.test
+        canonical: external11.ansible.test
+        view: ansible-test-view
+        comment: "split-horizon external"
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_external_idem
+
+    - name: "ASSERT | ansible-test-view is idempotent"
+      ansible.builtin.assert:
+        that: not result_external_idem.changed
+        success_msg: "PASS - ansible-test-view re-apply is idempotent"
+        fail_msg: "FAIL - ansible-test-view re-apply spuriously changed"
+
+    # ── Cleanup ────────────────────────────────────────────────────────────────
+    - name: "CLEANUP | Remove split11 from default view"
+      infoblox.nios_modules.nios_cname_record:
+        name: split11.ansible.test
+        canonical: internal11.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove split11 from ansible-test-view"
+      infoblox.nios_modules.nios_cname_record:
+        name: split11.ansible.test
+        canonical: external11.ansible.test
+        view: ansible-test-view
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove zone ansible.test from ansible-test-view"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: ansible-test-view
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove ansible-test-view"
+      infoblox.nios_modules.nios_dns_view:
+        name: ansible-test-view
+        state: absent
+        provider: "{{ nios_provider }}"

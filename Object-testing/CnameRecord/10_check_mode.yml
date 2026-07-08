@@ -1,0 +1,79 @@
+---
+- name: "Scenario 10 - Check mode: no real object created"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Ensure alias10 is absent before check-mode test"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias10.ansible.test
+        canonical: target10.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    # Run in check mode — module should predict changed=true but NOT write to WAPI
+    - name: "TEST | Create CNAME in check mode"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias10.ansible.test
+        canonical: target10.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      check_mode: true
+      register: result_check
+
+    - name: "ASSERT | Check mode predicts changed=true"
+      ansible.builtin.assert:
+        that: result_check.changed
+        success_msg: "PASS - check mode correctly predicted changed=true"
+        fail_msg: "FAIL - check mode did not predict changed=true"
+
+    # Verify nothing was actually created by trying to delete it
+    - name: "TEST | Attempt delete to verify no object was written during check mode"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias10.ansible.test
+        canonical: target10.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+      register: result_verify_absent
+
+    - name: "ASSERT | Record was not actually created by check mode"
+      ansible.builtin.assert:
+        that: not result_verify_absent.changed
+        success_msg: "PASS - check mode did not write real object (delete was no-op)"
+        fail_msg: "FAIL - check mode unexpectedly wrote a real object"
+
+    # Now do a real create to confirm the module works normally after check mode
+    - name: "TEST | Real create after check mode"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias10.ansible.test
+        canonical: target10.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_real
+
+    - name: "ASSERT | Real create reports changed"
+      ansible.builtin.assert:
+        that: result_real.changed
+        success_msg: "PASS - real create after check mode reported changed=true"
+        fail_msg: "FAIL - real create after check mode did not report changed"
+
+    - name: "CLEANUP | Remove test CNAME"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias10.ansible.test
+        canonical: target10.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"

@@ -1,0 +1,38 @@
+---
+- name: "Scenario 07 - Delete an existing CNAME record"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "SETUP | Create CNAME to be deleted"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias07.ansible.test
+        canonical: target07.ansible.test
+        view: default
+        comment: "delete test"
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "TEST | Delete the CNAME record"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias07.ansible.test
+        canonical: target07.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+      register: result_delete
+
+    - name: "ASSERT | Delete reports changed"
+      ansible.builtin.assert:
+        that: result_delete.changed
+        success_msg: "PASS - delete of existing CNAME reported changed=true"
+        fail_msg: "FAIL - delete of existing CNAME did not report changed"

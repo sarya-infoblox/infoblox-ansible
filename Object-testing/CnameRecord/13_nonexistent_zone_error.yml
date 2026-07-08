@@ -1,0 +1,31 @@
+---
+- name: "Scenario 13 - CNAME create in non-existent zone must fail"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    # Ensure the zone definitely does not exist
+    - name: "PRE | Remove zone doesnotexist.test if present"
+      infoblox.nios_modules.nios_zone:
+        name: doesnotexist13.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "TEST | Attempt CNAME create in non-existent zone"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias13.doesnotexist13.test
+        canonical: target13.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_bad_zone
+      ignore_errors: true
+
+    - name: "ASSERT | Create in non-existent zone must fail"
+      ansible.builtin.assert:
+        that: result_bad_zone.failed
+        success_msg: "PASS - WAPI correctly rejected CNAME in non-existent zone"
+        fail_msg: "FAIL - WAPI allowed CNAME in non-existent zone (unexpected)"

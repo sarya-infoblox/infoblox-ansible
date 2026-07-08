@@ -1,0 +1,61 @@
+---
+- name: "Scenario 17 - Case normalization: NIOS lowercases DNS names"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove any leftover CNAME (lowercase)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias17.ansible.test
+        canonical: target17.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "TEST | Create CNAME using UPPERCASE alias name"
+      infoblox.nios_modules.nios_cname_record:
+        name: ALIAS17.ANSIBLE.TEST
+        canonical: TARGET17.ANSIBLE.TEST
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_upper
+
+    - name: "ASSERT | Uppercase create reports changed"
+      ansible.builtin.assert:
+        that: result_upper.changed
+        success_msg: "PASS - uppercase alias create reported changed=true"
+        fail_msg: "FAIL - uppercase alias create did not report changed"
+
+    # Re-apply with lowercase — NIOS normalizes to lowercase, so must be idempotent
+    - name: "TEST | Re-apply with lowercase alias (must be idempotent after normalization)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias17.ansible.test
+        canonical: target17.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_lower
+
+    - name: "ASSERT | Lowercase re-apply is idempotent (case-normalized)"
+      ansible.builtin.assert:
+        that: not result_lower.changed
+        success_msg: "PASS - lowercase re-apply after uppercase create is idempotent"
+        fail_msg: "FAIL - case normalization mismatch: lowercase re-apply spuriously changed"
+
+    - name: "CLEANUP | Remove test CNAME"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias17.ansible.test
+        canonical: target17.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"

@@ -1,0 +1,86 @@
+---
+- name: "Scenario 04 - Rename CNAME alias using old_name/new_name dict"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove old alias if leftover"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias04old.ansible.test
+        canonical: target04.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove new alias if leftover"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias04new.ansible.test
+        canonical: target04.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "TEST | Create CNAME under original alias name"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias04old.ansible.test
+        canonical: target04.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_create
+
+    - name: "ASSERT | Create reports changed"
+      ansible.builtin.assert:
+        that: result_create.changed
+        success_msg: "PASS - original alias created"
+        fail_msg: "FAIL - original alias create did not report changed"
+
+    - name: "TEST | Rename alias using old_name/new_name dict"
+      infoblox.nios_modules.nios_cname_record:
+        name:
+          old_name: alias04old.ansible.test
+          new_name: alias04new.ansible.test
+        canonical: target04.ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_rename
+
+    - name: "ASSERT | Rename reports changed"
+      ansible.builtin.assert:
+        that: result_rename.changed
+        success_msg: "PASS - rename reported changed=true"
+        fail_msg: "FAIL - rename did not report changed"
+
+    # Verify old name is gone
+    - name: "TEST | Confirm old alias is absent (idempotent absent)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias04old.ansible.test
+        canonical: target04.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+      register: result_old_absent
+
+    - name: "ASSERT | Old alias is already absent (not changed)"
+      ansible.builtin.assert:
+        that: not result_old_absent.changed
+        success_msg: "PASS - old alias no longer exists"
+        fail_msg: "FAIL - old alias still exists after rename"
+
+    - name: "CLEANUP | Remove renamed alias"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias04new.ansible.test
+        canonical: target04.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"

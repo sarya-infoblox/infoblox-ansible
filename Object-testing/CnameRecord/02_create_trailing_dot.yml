@@ -1,0 +1,62 @@
+---
+- name: "Scenario 02 - Trailing-dot normalization on canonical"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove CNAME if leftover"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias02.ansible.test
+        canonical: target02.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    # Create with trailing dot on canonical
+    - name: "TEST | Create CNAME with trailing dot on canonical"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias02.ansible.test
+        canonical: "target02.ansible.test."
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_with_dot
+
+    - name: "ASSERT | Create with trailing dot reports changed"
+      ansible.builtin.assert:
+        that: result_with_dot.changed
+        success_msg: "PASS - create with trailing dot reported changed=true"
+        fail_msg: "FAIL - create with trailing dot did not report changed"
+
+    # Re-apply WITHOUT trailing dot — NIOS normalizes so must be idempotent
+    - name: "TEST | Re-apply same canonical without trailing dot (idempotency)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias02.ansible.test
+        canonical: "target02.ansible.test"
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_without_dot
+
+    - name: "ASSERT | Re-apply without dot must be idempotent"
+      ansible.builtin.assert:
+        that: not result_without_dot.changed
+        success_msg: "PASS - trailing dot normalization is idempotent"
+        fail_msg: "FAIL - trailing dot normalization caused spurious change"
+
+    - name: "CLEANUP | Remove test CNAME"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias02.ansible.test
+        canonical: target02.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"

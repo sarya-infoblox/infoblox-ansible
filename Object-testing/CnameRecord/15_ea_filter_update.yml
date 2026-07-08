@@ -1,0 +1,84 @@
+---
+- name: "Scenario 15 - Create with EAs, update EA value, verify idempotency"
+  hosts: localhost
+  connection: local
+  vars_files:
+    - vars/provider.yml
+
+  tasks:
+    - name: "PRE | Ensure zone ansible.test exists"
+      infoblox.nios_modules.nios_zone:
+        name: ansible.test
+        view: default
+        state: present
+        provider: "{{ nios_provider }}"
+
+    - name: "CLEANUP | Remove CNAME if leftover"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias15.ansible.test
+        canonical: target15.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
+
+    - name: "TEST | Create CNAME with Site EA"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias15.ansible.test
+        canonical: target15.ansible.test
+        view: default
+        extattrs:
+          Site:
+            value: "datacenter-A"
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_create
+
+    - name: "ASSERT | Create with EA reports changed"
+      ansible.builtin.assert:
+        that: result_create.changed
+        success_msg: "PASS - create with EA reported changed=true"
+        fail_msg: "FAIL - create with EA did not report changed"
+
+    - name: "TEST | Update Site EA to new value"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias15.ansible.test
+        canonical: target15.ansible.test
+        view: default
+        extattrs:
+          Site:
+            value: "datacenter-B"
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_ea_update
+
+    - name: "ASSERT | EA update reports changed"
+      ansible.builtin.assert:
+        that: result_ea_update.changed
+        success_msg: "PASS - EA value update reported changed=true"
+        fail_msg: "FAIL - EA value update did not report changed"
+
+    - name: "TEST | Re-apply same updated EA (idempotency)"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias15.ansible.test
+        canonical: target15.ansible.test
+        view: default
+        extattrs:
+          Site:
+            value: "datacenter-B"
+        state: present
+        provider: "{{ nios_provider }}"
+      register: result_ea_idem
+
+    - name: "ASSERT | Re-apply same EA is idempotent"
+      ansible.builtin.assert:
+        that: not result_ea_idem.changed
+        success_msg: "PASS - EA re-apply is idempotent"
+        fail_msg: "FAIL - EA re-apply spuriously changed"
+
+    - name: "CLEANUP | Remove test CNAME"
+      infoblox.nios_modules.nios_cname_record:
+        name: alias15.ansible.test
+        canonical: target15.ansible.test
+        view: default
+        state: absent
+        provider: "{{ nios_provider }}"
