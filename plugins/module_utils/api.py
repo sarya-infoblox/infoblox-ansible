@@ -1229,6 +1229,28 @@ class WapiModule(WapiBase):
         if ib_obj_type == NIOS_VLAN:
             obj_filter.update({'parent': ib_spec['parent']['transform'](self.module)})
 
+        # NIOS_ZONE uses 'fqdn' (with 'name' as alias) as its ib_req field.
+        # Rename dicts {old_name, new_name} therefore arrive in obj_filter['fqdn'],
+        # not obj_filter['name']. WAPI does not allow updating zone fqdn —
+        # the PUT request returns 'Field is not allowed for update: fqdn'.
+        # Detect the rename dict early and fail with a clear, actionable message
+        # instead of silently returning changed=False (the previous behaviour).
+        if ib_obj_type == NIOS_ZONE and 'fqdn' in obj_filter:
+            try:
+                fqdn_obj = check_type_dict(obj_filter['fqdn'])
+                zone_old_name = fqdn_obj.get('old_name')
+                zone_new_name = fqdn_obj.get('new_name')
+            except TypeError:
+                zone_old_name = zone_new_name = None
+            if zone_old_name and zone_new_name:
+                self.module.fail_json(
+                    msg="nios_zone does not support renaming a zone. "
+                        "WAPI does not allow updating the 'fqdn' field "
+                        "(old_name='%s', new_name='%s'). "
+                        "To rename a zone, delete the old zone and create a new one."
+                        % (zone_old_name, zone_new_name)
+                )
+
         if ('name' in obj_filter):
             # gets and returns the current object based on name/old_name passed
             try:
