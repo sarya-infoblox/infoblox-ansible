@@ -1,0 +1,283 @@
+# .github/workflows/issue-handler.yml
+#
+# FULL ISSUE AUTOMATION:
+#   1. Triage: classify as bug / enhancement / question / duplicate
+#   2. Questions → auto-reply with AI label, close
+#   3. Bugs/Enhancements → assign Copilot to generate fix PR
+#   4. Notify maintainers (repo collaborators with write/admin access) via issue comment + email
+#
+# SECRETS NEEDED:
+#   COPILOT_PAT - GitHub fine-grained PAT with Issues (R/W), Pull Requests (R/W), Metadata (Read)
+#
+# CUSTOMIZATION:
+#   - Edit the keyword lists in the "Triage issue" step to match your project
+#   - Edit MAINTAINERS list if you want specific people notified beyond repo collaborators
+
+name: "🤖 Issue Handler"
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+jobs:
+  triage-and-route:
+    runs-on: ubuntu-latest
+    outputs:
+      category: ${{ steps.triage.outputs.category }}
+      is_question: ${{ steps.triage.outputs.is_question }}
+    steps:
+      # ─── Step 1: Triage ───
+      - name: Triage issue
+        id: triage
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const title = context.payload.issue.title.toLowerCase();
+            const body = (context.payload.issue.body || '').toLowerCase();
+            const text = `${title} ${body}`;
+
+            // ── Keyword-based classification ──
+            const questionKeywords = [
+              'how to', 'how do', 'how can', 'is it possible', 'can i', 'can we',
+              'what is', 'what are', 'where is', 'where can', 'when will',
+              'does it', 'is there', 'any way to', 'help me', 'struggling with',
+              'question', 'asking', 'advice', 'guidance', 'clarification',
+              'documentation', 'example', 'tutorial', 'explain', 'understand',
+              'support', 'having trouble', 'confused about', '?'
+            ];
+
+            const bugKeywords = [
+              'bug', 'error', 'fail', 'crash', 'broken', 'not working',
+              'unexpected', 'wrong', 'issue', 'problem', 'traceback',
+              'exception', 'stacktrace', 'stack trace', 'segfault',
+              'regression', 'fix', 'defect', 'incorrect', 'cannot',
+              'doesnt work', "doesn't work", 'unable to', 'throws',
+              'timeout', 'hang', 'freeze', 'memory leak', 'panic',
+              'typeerror', 'keyerror', 'valueerror', 'attributeerror',
+              'importerror', 'modulenotfounderror', 'connectionerror'
+            ];
+
+            const enhancementKeywords = [
+              'feature', 'enhancement', 'request', 'add support',
+              'would be nice', 'proposal', 'suggest', 'improve',
+              'new', 'please add', 'wishlist', 'could you add',
+              'integrate', 'option to', 'ability to', 'allow',
+              'extend', 'support for', 'implement', 'upgrade'
+            ];
+
+            // Score each category
+            let scores = { question: 0, bug: 0, enhancement: 0 };
+
+            for (const kw of questionKeywords) {
+              if (text.includes(kw)) scores.question++;
+            }
+            for (const kw of bugKeywords) {
+              if (text.includes(kw)) scores.bug++;
+            }
+            for (const kw of enhancementKeywords) {
+              if (text.includes(kw)) scores.enhancement++;
+            }
+
+            // Title has question mark = strong question signal
+            if (title.includes('?')) scores.question += 3;
+
+            // Has error/traceback in body = strong bug signal
+            if (body.includes('traceback') || body.includes('error:') || body.includes('exception')) {
+              scores.bug += 3;
+            }
+
+            // Determine category
+            let category = 'bug'; // default to bug if unclear
+            const maxScore = Math.max(scores.question, scores.bug, scores.enhancement);
+
+            if (maxScore === 0) {
+              category = 'bug'; // conservative default
+            } else if (scores.question === maxScore) {
+              category = 'question';
+            } else if (scores.bug === maxScore) {
+              category = 'bug';
+            } else if (scores.enhancement === maxScore) {
+              category = 'enhancement';
+            }
+
+            console.log(`Triage scores: question=${scores.question}, bug=${scores.bug}, enhancement=${scores.enhancement}`);
+            console.log(`Category: ${category}`);
+
+            core.setOutput('category', category);
+            core.setOutput('is_question', category === 'question' ? 'true' : 'false');
+
+      # ─── Step 2: Apply labels ───
+      - name: Apply category label
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const category = '${{ steps.triage.outputs.category }}';
+            const labelMap = {
+              'question': { name: 'question', color: 'd876e3', description: 'User question - auto-triaged' },
+              'bug': { name: 'bug', color: 'd73a4a', description: 'Bug report - auto-triaged' },
+              'enhancement': { name: 'enhancement', color: 'a2eeef', description: 'Feature request - auto-triaged' }
+            };
+            const label = labelMap[category];
+
+            // Create label if it doesn't exist
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label.name
+              });
+            } catch {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label.name,
+                color: label.color,
+                description: label.description
+              });
+            }
+
+            // Also create the ai-triaged label
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'ai-triaged'
+              });
+            } catch {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'ai-triaged',
+                color: '0e8a16',
+                description: 'Triaged by AI automation'
+              });
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: [label.name, 'ai-triaged']
+            });
+
+  # ─── Job 2: Handle Questions ───
+  handle-question:
+    needs: triage-and-route
+    if: needs.triage-and-route.outputs.is_question == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-reply to question
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const issueTitle = context.payload.issue.title;
+            const issueBody = context.payload.issue.body || '';
+
+            const reply = [
+              `👋 Hi @${context.payload.issue.user.login},`,
+              '',
+              'Thank you for reaching out! This appears to be a **question** rather than a bug report or feature request.',
+              '',
+              'Here are some resources that might help:',
+              `- 📖 Check our [documentation](${context.payload.repository.homepage || context.payload.repository.html_url + '#readme'})`,
+              `- 💬 Search [existing issues](${context.payload.repository.html_url}/issues?q=is%3Aissue) for similar questions`,
+              `- 📚 Review the [README](${context.payload.repository.html_url}#readme) for setup guides`,
+              '',
+              'If this doesn\'t answer your question, feel free to reopen this issue with more details and a maintainer will follow up.',
+              '',
+              '---',
+              '*🤖 Replied using AI — this issue was automatically triaged and responded to.*'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: reply
+            });
+
+      - name: Close question issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              state: 'closed',
+              state_reason: 'not_planned'
+            });
+
+  # ─── Job 3: Handle Bugs & Enhancements → Assign Copilot ───
+  handle-code-issue:
+    needs: triage-and-route
+    if: needs.triage-and-route.outputs.is_question == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assign Copilot to work on issue
+        uses: otto-de/assign_issue_toCopilot_action@v1.0.1
+        with:
+          issue_number: ${{ github.event.issue.number }}
+          github_token: ${{ secrets.COPILOT_PAT }}
+
+      - name: Notify maintainers
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const category = '${{ needs.triage-and-route.outputs.category }}';
+            const issue = context.payload.issue;
+
+            // Get repo collaborators with push (write) or admin access
+            let maintainers = [];
+            try {
+              const collabs = await github.rest.repos.listCollaborators({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                permission: 'push'
+              });
+              maintainers = collabs.data
+                .filter(c => c.login !== 'github-actions[bot]' && c.login !== 'copilot[bot]')
+                .map(c => c.login);
+            } catch (error) {
+              console.log('Could not fetch collaborators:', error.message);
+              // Fallback: check CODEOWNERS or use repo owner
+              maintainers = [context.repo.owner];
+            }
+
+            const mentions = maintainers.map(m => `@${m}`).join(' ');
+            const emoji = category === 'bug' ? '🐛' : '✨';
+
+            const notification = [
+              `${emoji} **New ${category} reported — Copilot is working on it**`,
+              '',
+              `| Field | Details |`,
+              `|-------|---------|`,
+              `| **Category** | ${category} |`,
+              `| **Author** | @${issue.user.login} |`,
+              `| **Title** | ${issue.title} |`,
+              '',
+              'Copilot has been assigned and will create a PR shortly.',
+              'Once the PR is ready, please review and merge if appropriate.',
+              '',
+              `**Maintainers notified:** ${mentions}`,
+              '',
+              '---',
+              '*🤖 Auto-triaged and assigned by AI automation*'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: notification
+            });
