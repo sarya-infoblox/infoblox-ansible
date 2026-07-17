@@ -5,7 +5,7 @@ Infoblox NIOS Modules for Ansible Collections enable the management of your NIOS
 ## Description
 Infoblox NIOS Modules for Ansible Collections facilitate the DNS and IPAM automation of 
 VM workloads that are deployed across multiple platforms. The `nios_modules` collection consists of modules and plug-ins required to manage the networks,
-IP addresses, and DNS records in NIOS. The collection is hosted on Ansible Galaxy under `infoblox.nios_modules`.
+IP Addresses, and DNS records in NIOS. The collection is hosted on Ansible Galaxy under `infoblox.nios_modules`.
 
 ### Modules Overview
 
