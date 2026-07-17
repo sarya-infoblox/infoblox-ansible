@@ -1,0 +1,200 @@
+# .github/workflows/pr-handler.yml
+#
+# FULL PR AUTOMATION:
+#   1. Detect if PR author is a maintainer (write/admin) or external contributor
+#   2. External PRs → request Copilot review + notify maintainers
+#   3. All PRs → add summary comment with PR details
+#   4. Label PRs appropriately (external-contributor, needs-review, ai-reviewed)
+#
+# SECRETS NEEDED:
+#   COPILOT_PAT - GitHub fine-grained PAT with Issues (R/W), Pull Requests (R/W), Metadata (Read)
+
+name: "🔍 PR Handler"
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+jobs:
+  review-and-notify:
+    runs-on: ubuntu-latest
+    steps:
+      # ─── Step 1: Detect contributor type ───
+      - name: Check if author is maintainer
+        id: check-author
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const prAuthor = context.payload.pull_request.user.login;
+
+            // Get collaborators with write or admin access
+            let isMaintainer = false;
+            try {
+              const permission = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: prAuthor
+              });
+              const level = permission.data.permission;
+              isMaintainer = ['admin', 'write'].includes(level);
+              console.log(`${prAuthor} has ${level} access → isMaintainer: ${isMaintainer}`);
+            } catch (error) {
+              console.log(`Could not check permissions for ${prAuthor}: ${error.message}`);
+              isMaintainer = false;
+            }
+
+            core.setOutput('is_maintainer', isMaintainer ? 'true' : 'false');
+            core.setOutput('pr_author', prAuthor);
+
+      # ─── Step 2: Label the PR ───
+      - name: Label PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const isMaintainer = '${{ steps.check-author.outputs.is_maintainer }}' === 'true';
+            const labels = ['ai-reviewed'];
+
+            if (!isMaintainer) {
+              labels.push('external-contributor');
+              labels.push('needs-review');
+            }
+
+            // Create labels if they don't exist
+            const labelDefs = [
+              { name: 'external-contributor', color: 'fbca04', description: 'PR from external contributor' },
+              { name: 'needs-review', color: 'e4e669', description: 'Awaiting maintainer review' },
+              { name: 'ai-reviewed', color: '0e8a16', description: 'Reviewed by AI automation' }
+            ];
+
+            for (const def of labelDefs) {
+              if (labels.includes(def.name)) {
+                try {
+                  await github.rest.issues.getLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: def.name
+                  });
+                } catch {
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ...def
+                  });
+                }
+              }
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: labels
+            });
+
+      # ─── Step 3: Request Copilot review ───
+      - name: Request Copilot as reviewer
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            try {
+              await github.rest.pulls.requestReviewers({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                reviewers: ['Copilot']
+              });
+              console.log('Copilot assigned as reviewer');
+            } catch (error) {
+              console.log('Could not assign Copilot as reviewer:', error.message);
+            }
+
+      # ─── Step 4: Get PR stats for summary ───
+      - name: Get PR details
+        id: pr-details
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const pr = context.payload.pull_request;
+
+            // Get changed files
+            const files = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number
+            });
+
+            const stats = {
+              files_changed: files.data.length,
+              additions: pr.additions,
+              deletions: pr.deletions,
+              file_list: files.data.map(f => `\`${f.filename}\` (+${f.additions}/-${f.deletions})`).slice(0, 15)
+            };
+
+            core.setOutput('stats', JSON.stringify(stats));
+
+      # ─── Step 5: Notify maintainers on external PRs ───
+      - name: Notify maintainers
+        if: steps.check-author.outputs.is_maintainer == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const pr = context.payload.pull_request;
+            const stats = JSON.parse('${{ steps.pr-details.outputs.stats }}'.replace(/'/g, "\\'"));
+            const prAuthor = '${{ steps.check-author.outputs.pr_author }}';
+
+            // Get maintainers
+            let maintainers = [];
+            try {
+              const collabs = await github.rest.repos.listCollaborators({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                permission: 'push'
+              });
+              maintainers = collabs.data
+                .filter(c => !c.login.includes('[bot]') && c.login !== prAuthor)
+                .map(c => c.login);
+            } catch (error) {
+              maintainers = [context.repo.owner];
+            }
+
+            const mentions = maintainers.map(m => `@${m}`).join(' ');
+
+            const comment = [
+              `🔍 **External PR — Review needed**`,
+              '',
+              `| Field | Details |`,
+              `|-------|---------|`,
+              `| **Author** | @${prAuthor} (external contributor) |`,
+              `| **Files changed** | ${stats.files_changed} |`,
+              `| **Additions** | +${stats.additions} |`,
+              `| **Deletions** | -${stats.deletions} |`,
+              '',
+              '**Changed files:**',
+              stats.file_list.map(f => `- ${f}`).join('\n'),
+              stats.file_list.length >= 15 ? '\n_(showing first 15 files)_' : '',
+              '',
+              '**Status:** Copilot has been assigned for automated code review.',
+              'Once Copilot review is complete, a maintainer should verify and merge.',
+              '',
+              `**Maintainers:** ${mentions} — please review when ready.`,
+              '',
+              '---',
+              '*🤖 Auto-triaged by AI automation*'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: comment
+            });
