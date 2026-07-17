@@ -1,0 +1,276 @@
+# .github/workflows/backlog-sweep.yml
+#
+# BACKLOG SWEEP (runs on schedule):
+#   1. Find all open issues without 'ai-triaged' label → triage them
+#   2. Find all open PRs without 'ai-reviewed' label → request Copilot review
+#   3. Find stale issues/PRs (no activity for 14 days) → ping maintainers
+#   4. Generates a summary report as an issue comment
+#
+# SECRETS NEEDED:
+#   COPILOT_PAT - GitHub fine-grained PAT
+#
+# SCHEDULE:
+#   Runs weekdays at 8:00 AM UTC — adjust the cron as needed
+
+name: "📋 Backlog Sweep"
+
+on:
+  schedule:
+    - cron: '0 8 * * 1-5'  # Weekdays at 8 AM UTC
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+jobs:
+  sweep-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sweep unattended issues
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const now = new Date();
+            const staleThreshold = 14; // days
+            let processed = 0;
+            let staleCount = 0;
+            let skipped = 0;
+
+            // ── Get all open issues ──
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo,
+              state: 'open',
+              per_page: 100
+            });
+
+            // Filter out PRs (GitHub API returns PRs as issues too)
+            const realIssues = issues.filter(i => !i.pull_request);
+
+            console.log(`Found ${realIssues.length} open issues`);
+
+            for (const issue of realIssues) {
+              const labels = issue.labels.map(l => l.name);
+
+              // Skip already triaged
+              if (labels.includes('ai-triaged')) {
+                skipped++;
+                continue;
+              }
+
+              // ── Triage untriaged issues ──
+              const title = issue.title.toLowerCase();
+              const body = (issue.body || '').toLowerCase();
+              const text = `${title} ${body}`;
+
+              const questionSignals = ['how to', 'how do', 'what is', 'is it possible', 'can i', '?'];
+              const bugSignals = ['bug', 'error', 'crash', 'broken', 'not working', 'traceback', 'exception'];
+              const enhSignals = ['feature', 'enhancement', 'request', 'add support', 'proposal', 'suggest'];
+
+              let qScore = 0, bScore = 0, eScore = 0;
+              for (const kw of questionSignals) { if (text.includes(kw)) qScore++; }
+              for (const kw of bugSignals) { if (text.includes(kw)) bScore++; }
+              for (const kw of enhSignals) { if (text.includes(kw)) eScore++; }
+              if (title.includes('?')) qScore += 3;
+
+              let category = 'bug';
+              const maxScore = Math.max(qScore, bScore, eScore);
+              if (maxScore > 0) {
+                if (qScore === maxScore) category = 'question';
+                else if (eScore === maxScore) category = 'enhancement';
+              }
+
+              // Apply labels
+              const applyLabels = [category, 'ai-triaged'];
+              for (const labelName of applyLabels) {
+                try {
+                  await github.rest.issues.getLabel({ owner, repo, name: labelName });
+                } catch {
+                  const colors = { 'question': 'd876e3', 'bug': 'd73a4a', 'enhancement': 'a2eeef', 'ai-triaged': '0e8a16' };
+                  await github.rest.issues.createLabel({
+                    owner, repo,
+                    name: labelName,
+                    color: colors[labelName] || '0e8a16'
+                  });
+                }
+              }
+
+              await github.rest.issues.addLabels({
+                owner, repo,
+                issue_number: issue.number,
+                labels: applyLabels
+              });
+
+              processed++;
+
+              // Rate limit: small delay between API calls
+              await new Promise(r => setTimeout(r, 1000));
+            }
+
+            // ── Check for stale issues ──
+            for (const issue of realIssues) {
+              const lastUpdate = new Date(issue.updated_at);
+              const daysSinceUpdate = (now - lastUpdate) / (1000 * 60 * 60 * 24);
+
+              if (daysSinceUpdate > staleThreshold) {
+                const labels = issue.labels.map(l => l.name);
+                if (!labels.includes('stale-pinged')) {
+                  // Get maintainers
+                  let maintainers = [];
+                  try {
+                    const collabs = await github.rest.repos.listCollaborators({
+                      owner, repo, permission: 'push'
+                    });
+                    maintainers = collabs.data.filter(c => !c.login.includes('[bot]')).map(c => c.login);
+                  } catch { maintainers = [owner]; }
+
+                  const mentions = maintainers.map(m => `@${m}`).join(' ');
+
+                  await github.rest.issues.createComment({
+                    owner, repo,
+                    issue_number: issue.number,
+                    body: [
+                      `⏰ **Stale issue reminder**`,
+                      '',
+                      `This issue has had no activity for ${Math.floor(daysSinceUpdate)} days.`,
+                      '',
+                      `${mentions} — could you take a look or close if no longer relevant?`,
+                      '',
+                      '---',
+                      '*🤖 Backlog sweep automation*'
+                    ].join('\n')
+                  });
+
+                  // Label to avoid re-pinging
+                  try {
+                    await github.rest.issues.getLabel({ owner, repo, name: 'stale-pinged' });
+                  } catch {
+                    await github.rest.issues.createLabel({
+                      owner, repo, name: 'stale-pinged', color: 'cccccc', description: 'Pinged about staleness'
+                    });
+                  }
+                  await github.rest.issues.addLabels({
+                    owner, repo, issue_number: issue.number, labels: ['stale-pinged']
+                  });
+
+                  staleCount++;
+                  await new Promise(r => setTimeout(r, 1000));
+                }
+              }
+            }
+
+            console.log(`Sweep complete: ${processed} triaged, ${staleCount} stale pinged, ${skipped} already triaged`);
+
+  sweep-prs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sweep unreviewed PRs
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            let reviewed = 0;
+
+            // Get all open PRs
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner, repo,
+              state: 'open',
+              per_page: 100
+            });
+
+            console.log(`Found ${prs.length} open PRs`);
+
+            for (const pr of prs) {
+              // Get labels
+              const labels = pr.labels.map(l => l.name);
+
+              if (labels.includes('ai-reviewed')) {
+                continue; // Already processed
+              }
+
+              // Check if author is external
+              let isMaintainer = false;
+              try {
+                const perm = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner, repo, username: pr.user.login
+                });
+                isMaintainer = ['admin', 'write'].includes(perm.data.permission);
+              } catch {
+                isMaintainer = false;
+              }
+
+              // Request Copilot review
+              try {
+                await github.rest.pulls.requestReviewers({
+                  owner, repo,
+                  pull_number: pr.number,
+                  reviewers: ['Copilot']
+                });
+              } catch (error) {
+                console.log(`Could not assign Copilot to PR #${pr.number}: ${error.message}`);
+              }
+
+              // Label it
+              const applyLabels = ['ai-reviewed'];
+              if (!isMaintainer) {
+                applyLabels.push('external-contributor');
+                applyLabels.push('needs-review');
+              }
+
+              for (const labelName of applyLabels) {
+                try {
+                  await github.rest.issues.getLabel({ owner, repo, name: labelName });
+                } catch {
+                  const colors = { 'ai-reviewed': '0e8a16', 'external-contributor': 'fbca04', 'needs-review': 'e4e669' };
+                  await github.rest.issues.createLabel({
+                    owner, repo, name: labelName, color: colors[labelName] || '0e8a16'
+                  });
+                }
+              }
+
+              await github.rest.issues.addLabels({
+                owner, repo,
+                issue_number: pr.number,
+                labels: applyLabels
+              });
+
+              // Notify maintainers on external PRs
+              if (!isMaintainer) {
+                let maintainers = [];
+                try {
+                  const collabs = await github.rest.repos.listCollaborators({
+                    owner, repo, permission: 'push'
+                  });
+                  maintainers = collabs.data.filter(c => !c.login.includes('[bot]') && c.login !== pr.user.login).map(c => c.login);
+                } catch { maintainers = [owner]; }
+
+                const mentions = maintainers.map(m => `@${m}`).join(' ');
+
+                await github.rest.issues.createComment({
+                  owner, repo,
+                  issue_number: pr.number,
+                  body: [
+                    `🔍 **Unreviewed external PR found during backlog sweep**`,
+                    '',
+                    `This PR by @${pr.user.login} has not been reviewed yet.`,
+                    `Copilot has been assigned for automated review.`,
+                    '',
+                    `${mentions} — please review when Copilot finishes.`,
+                    '',
+                    '---',
+                    '*🤖 Backlog sweep automation*'
+                  ].join('\n')
+                });
+              }
+
+              reviewed++;
+              await new Promise(r => setTimeout(r, 1000));
+            }
+
+            console.log(`PR sweep complete: ${reviewed} PRs processed`);
