@@ -63,7 +63,7 @@ The `infoblox.nios_modules` collection has the following content:
 - Python version 3.10 or later
 - Ansible Core version 2.16 or later
 - NIOS 9.0.x and 9.1.x
-- Infoblox WAPI version 2.12.3 or later
+- Infoblox WAPI version 2.12.x or later
 - Python module infoblox-client version 0.6.2
  
  Install the infoblox-client WAPI package. To install, run the following command:
