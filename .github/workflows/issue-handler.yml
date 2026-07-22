@@ -4,14 +4,14 @@
 #   1. Triage: classify as bug / enhancement / question / duplicate
 #   2. Questions → auto-reply with AI label, close
 #   3. Bugs/Enhancements → assign Copilot to generate fix PR
-#   4. Notify maintainers (repo collaborators with write/admin access) via issue comment + email
+#   4. Notify maintainers listed in .github/maintainers.yml
 #
 # SECRETS NEEDED:
 #   COPILOT_PAT - GitHub fine-grained PAT with Issues (R/W), Pull Requests (R/W), Metadata (Read)
 #
-# CUSTOMIZATION:
-#   - Edit the keyword lists in the "Triage issue" step to match your project
-#   - Edit MAINTAINERS list if you want specific people notified beyond repo collaborators
+# MAINTAINER LIST:
+#   Edit .github/maintainers.yml to control who gets notified.
+#   If that file is missing, falls back to repo collaborators with write access.
 
 name: "🤖 Issue Handler"
 
@@ -223,6 +223,9 @@ jobs:
     if: needs.triage-and-route.outputs.is_question == 'false'
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout for config
+        uses: actions/checkout@v4
+
       - name: Assign Copilot to work on issue
         uses: otto-de/assign_issue_toCopilot_action@v1.0.1
         with:
@@ -234,24 +237,32 @@ jobs:
         with:
           github-token: ${{ secrets.COPILOT_PAT }}
           script: |
+            const fs = require('fs');
             const category = '${{ needs.triage-and-route.outputs.category }}';
             const issue = context.payload.issue;
 
-            // Get repo collaborators with push (write) or admin access
+            // ── Read maintainers from .github/maintainers.yml ──
             let maintainers = [];
             try {
-              const collabs = await github.rest.repos.listCollaborators({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                permission: 'push'
-              });
-              maintainers = collabs.data
-                .filter(c => c.login !== 'github-actions[bot]' && c.login !== 'copilot[bot]')
-                .map(c => c.login);
+              const yaml = fs.readFileSync('.github/maintainers.yml', 'utf8');
+              const matches = [...yaml.matchAll(/- github:\s*(\S+)/g)];
+              maintainers = matches.map(m => m[1]);
+              console.log('Loaded maintainers from .github/maintainers.yml:', maintainers);
             } catch (error) {
-              console.log('Could not fetch collaborators:', error.message);
-              // Fallback: check CODEOWNERS or use repo owner
-              maintainers = [context.repo.owner];
+              console.log('No maintainers.yml found, falling back to repo collaborators');
+              // Fallback: query GitHub API for collaborators with write access
+              try {
+                const collabs = await github.rest.repos.listCollaborators({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  permission: 'push'
+                });
+                maintainers = collabs.data
+                  .filter(c => !c.login.includes('[bot]'))
+                  .map(c => c.login);
+              } catch (e) {
+                maintainers = [context.repo.owner];
+              }
             }
 
             const mentions = maintainers.map(m => `@${m}`).join(' ');
