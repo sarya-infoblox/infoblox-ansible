@@ -292,3 +292,49 @@ jobs:
               issue_number: issue.number,
               body: notification
             });
+
+      - name: Read email config
+        id: email-config
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const yaml = fs.readFileSync('.github/workflows/maintainers.yml', 'utf8');
+              const emailEnabled = yaml.includes('email_enabled: true');
+              // Extract emails from maintainers
+              const emailMatches = [...yaml.matchAll(/email:\s*(\S+)/g)];
+              const emails = emailMatches.map(m => m[1]).join(',');
+              core.setOutput('enabled', emailEnabled ? 'true' : 'false');
+              core.setOutput('emails', emails);
+              console.log(`Email enabled: ${emailEnabled}, recipients: ${emails}`);
+            } catch {
+              core.setOutput('enabled', 'false');
+              core.setOutput('emails', '');
+            }
+
+      - name: Send email to maintainers
+        if: steps.email-config.outputs.enabled == 'true' && steps.email-config.outputs.emails != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.office365.com
+          server_port: 587
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "[${{ github.repository }}] New ${{ needs.triage-and-route.outputs.category }}: ${{ github.event.issue.title }}"
+          to: ${{ steps.email-config.outputs.emails }}
+          from: ${{ secrets.MAIL_USERNAME }}
+          content_type: text/html
+          body: |
+            <h2>${{ needs.triage-and-route.outputs.category == 'bug' && '🐛' || '✨' }} New ${{ needs.triage-and-route.outputs.category }} reported</h2>
+            <table>
+              <tr><td><strong>Repository</strong></td><td>${{ github.repository }}</td></tr>
+              <tr><td><strong>Category</strong></td><td>${{ needs.triage-and-route.outputs.category }}</td></tr>
+              <tr><td><strong>Title</strong></td><td>${{ github.event.issue.title }}</td></tr>
+              <tr><td><strong>Author</strong></td><td>${{ github.event.issue.user.login }}</td></tr>
+              <tr><td><strong>Status</strong></td><td>Copilot assigned — PR in progress</td></tr>
+            </table>
+            <br>
+            <p><a href="${{ github.event.issue.html_url }}">View issue on GitHub →</a></p>
+            <hr>
+            <p><small>🤖 Sent by AI automation</small></p>
