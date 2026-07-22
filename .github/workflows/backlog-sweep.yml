@@ -202,17 +202,20 @@ jobs:
             try {
               const yaml = fs.readFileSync('.github/maintainers.yml', 'utf8');
               const emailEnabled = yaml.includes('email_enabled: true');
+              const testMode = yaml.includes('test_mode: true');
               const emailMatches = [...yaml.matchAll(/email:\s*(\S+)/g)];
               const emails = emailMatches.map(m => m[1]).join(',');
               core.setOutput('enabled', emailEnabled ? 'true' : 'false');
+              core.setOutput('test-mode', testMode ? 'true' : 'false');
               core.setOutput('emails', emails);
             } catch {
               core.setOutput('enabled', 'false');
+              core.setOutput('test-mode', 'false');
               core.setOutput('emails', '');
             }
 
       - name: Send sweep summary email
-        if: steps.email-config.outputs.enabled == 'true' && steps.email-config.outputs.emails != ''
+        if: steps.email-config.outputs.enabled == 'true' && steps.email-config.outputs.test-mode != 'true' && steps.email-config.outputs.emails != '' && secrets.MAIL_USERNAME != '' && secrets.MAIL_PASSWORD != ''
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.office365.com
@@ -222,8 +225,7 @@ jobs:
           subject: "[${{ github.repository }}] 📋 Backlog sweep report"
           to: ${{ steps.email-config.outputs.emails }}
           from: ${{ secrets.MAIL_USERNAME }}
-          content_type: text/html
-          body: |
+          html_body: |
             <h2>📋 Backlog Sweep Report</h2>
             <p><strong>Repository:</strong> ${{ github.repository }}</p>
             <table>
