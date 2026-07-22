@@ -300,7 +300,7 @@ jobs:
           script: |
             const fs = require('fs');
             try {
-              const yaml = fs.readFileSync('.github/workflows/maintainers.yml', 'utf8');
+              const yaml = fs.readFileSync('.github/maintainers.yml', 'utf8');
               const emailEnabled = yaml.includes('email_enabled: true');
               // Extract emails from maintainers
               const emailMatches = [...yaml.matchAll(/email:\s*(\S+)/g)];
