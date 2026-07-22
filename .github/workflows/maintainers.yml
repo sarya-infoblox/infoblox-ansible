@@ -1,0 +1,329 @@
+# .github/workflows/test-automation.yml
+#
+# MANUAL TEST WORKFLOW
+# Lets you test every automation scenario on your own fork
+# without needing external contributors or real customer issues.
+#
+# HOW TO USE:
+#   1. Go to Actions tab in your repo
+#   2. Click "🧪 Test Automation" in the left sidebar
+#   3. Click "Run workflow"
+#   4. Select which test to run
+#   5. Watch the results in Issues and PRs tabs
+#
+# SECRETS NEEDED:
+#   COPILOT_PAT - same one you already set up
+
+name: "🧪 Test Automation"
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_scenario:
+        description: 'Which scenario to test?'
+        required: true
+        type: choice
+        options:
+          - 'all'
+          - 'question-issue'
+          - 'bug-issue'
+          - 'enhancement-issue'
+          - 'external-pr'
+          - 'backlog-sweep'
+          - 'stale-detection'
+          - 'maintainer-notification'
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: write
+
+jobs:
+  # ─── Test: Question Issue ───
+  test-question:
+    if: inputs.test_scenario == 'question-issue' || inputs.test_scenario == 'all'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create test question issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '[TEST] How do I configure the API client for custom endpoints?',
+              body: [
+                '**This is an automated test issue — created by the test workflow.**',
+                '',
+                'I am trying to understand how to configure the API client.',
+                'Is it possible to set custom endpoints? How can I do this?',
+                'Where is the documentation for this feature?',
+                '',
+                '---',
+                '_Test scenario: question — expected result: auto-reply + close + label `question`_'
+              ].join('\n'),
+              labels: ['test']
+            });
+            console.log(`Created test question issue #${issue.data.number}`);
+
+  # ─── Test: Bug Issue ───
+  test-bug:
+    if: inputs.test_scenario == 'bug-issue' || inputs.test_scenario == 'all'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create test bug issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '[TEST] ConnectionError when calling DNS endpoint with invalid params',
+              body: [
+                '**This is an automated test issue — created by the test workflow.**',
+                '',
+                '## Bug Report',
+                '',
+                'When calling the DNS endpoint with empty parameters, the client crashes:',
+                '',
+                '```',
+                'Traceback (most recent call last):',
+                '  File "client.py", line 42, in call_api',
+                '    response = self.session.get(url)',
+                'ConnectionError: Failed to establish connection',
+                '```',
+                '',
+                'Expected: graceful error handling with a meaningful message.',
+                'Actual: unhandled exception crashes the program.',
+                '',
+                '---',
+                '_Test scenario: bug — expected result: label `bug` + Copilot assigned + maintainers notified_'
+              ].join('\n'),
+              labels: ['test']
+            });
+            console.log(`Created test bug issue #${issue.data.number}`);
+
+  # ─── Test: Enhancement Issue ───
+  test-enhancement:
+    if: inputs.test_scenario == 'enhancement-issue' || inputs.test_scenario == 'all'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create test enhancement issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '[TEST] Feature request: add support for batch API operations',
+              body: [
+                '**This is an automated test issue — created by the test workflow.**',
+                '',
+                '## Feature Request',
+                '',
+                'It would be great to add support for batch operations.',
+                'Currently we have to make individual API calls for each record,',
+                'which is slow when processing hundreds of items.',
+                '',
+                'Proposal: implement a batch endpoint that accepts multiple',
+                'operations in a single request.',
+                '',
+                '---',
+                '_Test scenario: enhancement — expected result: label `enhancement` + Copilot assigned + maintainers notified_'
+              ].join('\n'),
+              labels: ['test']
+            });
+            console.log(`Created test enhancement issue #${issue.data.number}`);
+
+  # ─── Test: External Contributor PR ───
+  test-external-pr:
+    if: inputs.test_scenario == 'external-pr' || inputs.test_scenario == 'all'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.COPILOT_PAT }}
+
+      - name: Create test branch and PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const timestamp = Date.now();
+            const branchName = `test/external-pr-${timestamp}`;
+
+            // Get default branch SHA
+            const { data: refData } = await github.rest.git.getRef({
+              owner, repo,
+              ref: `heads/${context.payload.repository.default_branch}`
+            });
+            const sha = refData.object.sha;
+
+            // Create branch
+            await github.rest.git.createRef({
+              owner, repo,
+              ref: `refs/heads/${branchName}`,
+              sha: sha
+            });
+
+            // Create a test file on the branch
+            await github.rest.repos.createOrUpdateFileContents({
+              owner, repo,
+              path: `tests/test_automation_${timestamp}.py`,
+              message: '[TEST] Add test file for automation validation',
+              content: Buffer.from([
+                '"""',
+                'Test file created by automation test workflow.',
+                'This simulates an external contributor adding tests.',
+                '"""',
+                '',
+                'def test_placeholder():',
+                '    """Placeholder test for automation validation."""',
+                '    assert True',
+                '',
+                'def test_api_client_init():',
+                '    """Test API client initialization."""',
+                '    # TODO: implement actual test',
+                '    assert True',
+                ''
+              ].join('\n')).toString('base64'),
+              branch: branchName
+            });
+
+            // Create PR
+            const pr = await github.rest.pulls.create({
+              owner, repo,
+              title: '[TEST] Add test coverage for API client',
+              body: [
+                '**This is an automated test PR — created by the test workflow.**',
+                '',
+                'This PR adds test coverage for the API client module.',
+                'Changes:',
+                '- Added placeholder tests',
+                '- Added API client initialization test',
+                '',
+                '---',
+                '_Test scenario: external PR — expected result:_',
+                '_The PR handler will treat this as external (test_mode=true in maintainers.yml),_',
+                '_assign Copilot for review, label it, and notify maintainers._'
+              ].join('\n'),
+              head: branchName,
+              base: context.payload.repository.default_branch
+            });
+            console.log(`Created test PR #${pr.data.number}`);
+
+  # ─── Test: Maintainer Notification ───
+  test-notification:
+    if: inputs.test_scenario == 'maintainer-notification' || inputs.test_scenario == 'all'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout for config
+        uses: actions/checkout@v4
+
+      - name: Test maintainer notification
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Read maintainers config
+            let config = { maintainers: [{ github: owner }] };
+            try {
+              const yaml = fs.readFileSync('.github/maintainers.yml', 'utf8');
+              // Simple YAML parsing for maintainers list
+              const maintainerMatches = yaml.matchAll(/- github:\s*(\S+)/g);
+              const maintainers = [...maintainerMatches].map(m => m[1]);
+              if (maintainers.length > 0) {
+                config.maintainers = maintainers.map(g => ({ github: g }));
+              }
+              console.log('Loaded maintainers from config:', config.maintainers);
+            } catch (error) {
+              console.log('No maintainers.yml found, using repo owner as default');
+            }
+
+            const mentions = config.maintainers.map(m => `@${m.github}`).join(' ');
+
+            // Create a notification test issue
+            const issue = await github.rest.issues.create({
+              owner, repo,
+              title: '[TEST] Notification test — verifying maintainer alerts',
+              body: [
+                '**This is a notification test.**',
+                '',
+                `Maintainers detected: ${mentions}`,
+                '',
+                'If you received a GitHub notification for this issue,',
+                'the notification system is working correctly.',
+                '',
+                'You can close this issue after verifying.',
+                '',
+                '---',
+                '_Test scenario: maintainer notification_'
+              ].join('\n'),
+              labels: ['test']
+            });
+
+            // Also comment to trigger @mention notification
+            await github.rest.issues.createComment({
+              owner, repo,
+              issue_number: issue.data.number,
+              body: [
+                `🔔 **Notification test**`,
+                '',
+                `${mentions} — if you see this notification, the system is working!`,
+                '',
+                'Check these notification channels:',
+                '- [ ] GitHub notification bell (top-right)',
+                '- [ ] Email from GitHub',
+                '- [ ] Mobile push notification (if GitHub app installed)',
+                '',
+                '---',
+                '*🤖 Test automation*'
+              ].join('\n')
+            });
+
+  # ─── Test: Backlog Sweep ───
+  test-backlog:
+    if: inputs.test_scenario == 'backlog-sweep' || inputs.test_scenario == 'all'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create unlabeled issues for sweep to find
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Create issues WITHOUT ai-triaged label — sweep should catch these
+            const issues = [
+              {
+                title: '[TEST-SWEEP] Error in DNS lookup function',
+                body: 'Bug: the DNS lookup crashes with a timeout error when the server is unreachable.\n\n_This issue has no ai-triaged label — backlog sweep should triage it._'
+              },
+              {
+                title: '[TEST-SWEEP] Can we add GraphQL support?',
+                body: 'Feature request: it would be nice to add GraphQL support alongside REST.\n\n_This issue has no ai-triaged label — backlog sweep should triage it._'
+              }
+            ];
+
+            for (const issue of issues) {
+              const created = await github.rest.issues.create({
+                owner, repo,
+                title: issue.title,
+                body: issue.body,
+                labels: ['test']
+              });
+              console.log(`Created sweep test issue #${created.data.number}`);
+            }
+
+            console.log('Now trigger the backlog-sweep workflow to process these.');
