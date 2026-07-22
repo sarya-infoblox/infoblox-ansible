@@ -239,3 +239,50 @@ jobs:
               issue_number: pr.number,
               body: comment
             });
+
+      - name: Read email config
+        if: steps.check-author.outputs.is_maintainer == 'false'
+        id: email-config
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const yaml = fs.readFileSync('.github/workflows/maintainers.yml', 'utf8');
+              const emailEnabled = yaml.includes('email_enabled: true');
+              const emailMatches = [...yaml.matchAll(/email:\s*(\S+)/g)];
+              const emails = emailMatches.map(m => m[1]).join(',');
+              core.setOutput('enabled', emailEnabled ? 'true' : 'false');
+              core.setOutput('emails', emails);
+            } catch {
+              core.setOutput('enabled', 'false');
+              core.setOutput('emails', '');
+            }
+
+      - name: Send email to maintainers
+        if: steps.check-author.outputs.is_maintainer == 'false' && steps.email-config.outputs.enabled == 'true' && steps.email-config.outputs.emails != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.office365.com
+          server_port: 587
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "[${{ github.repository }}] External PR needs review: ${{ github.event.pull_request.title }}"
+          to: ${{ steps.email-config.outputs.emails }}
+          from: ${{ secrets.MAIL_USERNAME }}
+          content_type: text/html
+          body: |
+            <h2>🔍 External PR needs review</h2>
+            <table>
+              <tr><td><strong>Repository</strong></td><td>${{ github.repository }}</td></tr>
+              <tr><td><strong>Title</strong></td><td>${{ github.event.pull_request.title }}</td></tr>
+              <tr><td><strong>Author</strong></td><td>${{ github.event.pull_request.user.login }} (external contributor)</td></tr>
+              <tr><td><strong>Files changed</strong></td><td>${{ github.event.pull_request.changed_files }}</td></tr>
+              <tr><td><strong>Additions</strong></td><td>+${{ github.event.pull_request.additions }}</td></tr>
+              <tr><td><strong>Deletions</strong></td><td>-${{ github.event.pull_request.deletions }}</td></tr>
+              <tr><td><strong>Status</strong></td><td>Copilot review in progress</td></tr>
+            </table>
+            <br>
+            <p><a href="${{ github.event.pull_request.html_url }}">Review PR on GitHub →</a></p>
+            <hr>
+            <p><small>🤖 Sent by AI automation</small></p>
