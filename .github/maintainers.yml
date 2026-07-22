@@ -1,0 +1,50 @@
+# .github/maintainers.yml
+#
+# This file defines who gets notified by the AI automation workflows.
+# Edit this list to control notifications — the workflows read from here
+# instead of dynamically querying GitHub collaborators.
+#
+# FIELDS:
+#   github   - GitHub username (required)
+#   email    - Email for direct notifications (optional)
+#   role     - For display purposes: lead / maintainer / reviewer
+#   notify   - What to notify about: issues, prs, stale, all
+
+maintainers:
+  - github: sarya-infoblox
+    email: sarya@infoblox.com
+    role: lead
+    notify: all
+
+  # Add more maintainers below:
+  # - github: teammate-username
+  #   email: teammate@infoblox.com
+  #   role: maintainer
+  #   notify: all
+
+  # - github: reviewer-username
+  #   email: reviewer@infoblox.com
+  #   role: reviewer
+  #   notify: prs
+
+# ─── Test mode settings ───
+# When test_mode is true, the workflows will:
+#   - Treat YOUR OWN PRs as "external contributor" PRs (so you can test that flow)
+#   - Log extra debug output in the Actions tab
+#   - Skip actual email sending (just logs what would be sent)
+test_mode: true
+
+# ─── Notification settings ───
+notifications:
+  # GitHub comment @mentions (always works)
+  github_mentions: true
+
+  # Email via Outlook / Microsoft 365
+  # Requires MAIL_USERNAME and MAIL_PASSWORD secrets in repo settings
+  # MAIL_USERNAME = your outlook email (e.g. sarya@infoblox.com)
+  # MAIL_PASSWORD = app password from myaccount.microsoft.com
+  email_enabled: true
+  smtp_server: smtp.office365.com
+  smtp_port: 587
+
+  slack_enabled: false
