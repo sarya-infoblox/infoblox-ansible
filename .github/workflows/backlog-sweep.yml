@@ -28,11 +28,15 @@ jobs:
   sweep-issues:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout for config
+        uses: actions/checkout@v4
+
       - name: Sweep unattended issues
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.COPILOT_PAT }}
           script: |
+            const fs = require('fs');
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const now = new Date();
@@ -40,6 +44,31 @@ jobs:
             let processed = 0;
             let staleCount = 0;
             let skipped = 0;
+
+            // ── Load maintainers from config ──
+            let configMaintainers = [];
+            let testMode = false;
+            try {
+              const yaml = fs.readFileSync('.github/maintainers.yml', 'utf8');
+              const matches = [...yaml.matchAll(/- github:\s*(\S+)/g)];
+              configMaintainers = matches.map(m => m[1]);
+              testMode = yaml.includes('test_mode: true');
+              console.log('Loaded maintainers from config:', configMaintainers);
+              console.log('Test mode:', testMode);
+            } catch {
+              console.log('No maintainers.yml found, will use GitHub API fallback');
+            }
+
+            // Helper: get maintainers list
+            async function getMaintainers() {
+              if (configMaintainers.length > 0) return configMaintainers;
+              try {
+                const collabs = await github.rest.repos.listCollaborators({
+                  owner, repo, permission: 'push'
+                });
+                return collabs.data.filter(c => !c.login.includes('[bot]')).map(c => c.login);
+              } catch { return [owner]; }
+            }
 
             // ── Get all open issues ──
             const issues = await github.paginate(github.rest.issues.listForRepo, {
@@ -119,15 +148,7 @@ jobs:
               if (daysSinceUpdate > staleThreshold) {
                 const labels = issue.labels.map(l => l.name);
                 if (!labels.includes('stale-pinged')) {
-                  // Get maintainers
-                  let maintainers = [];
-                  try {
-                    const collabs = await github.rest.repos.listCollaborators({
-                      owner, repo, permission: 'push'
-                    });
-                    maintainers = collabs.data.filter(c => !c.login.includes('[bot]')).map(c => c.login);
-                  } catch { maintainers = [owner]; }
-
+                  const maintainers = await getMaintainers();
                   const mentions = maintainers.map(m => `@${m}`).join(' ');
 
                   await github.rest.issues.createComment({
@@ -168,14 +189,48 @@ jobs:
   sweep-prs:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout for config
+        uses: actions/checkout@v4
+
       - name: Sweep unreviewed PRs
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.COPILOT_PAT }}
           script: |
+            const fs = require('fs');
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             let reviewed = 0;
+
+            // ── Load maintainers from config ──
+            let configMaintainers = [];
+            let testMode = false;
+            try {
+              const yaml = fs.readFileSync('.github/maintainers.yml', 'utf8');
+              const matches = [...yaml.matchAll(/- github:\s*(\S+)/g)];
+              configMaintainers = matches.map(m => m[1]);
+              testMode = yaml.includes('test_mode: true');
+              console.log('Loaded maintainers from config:', configMaintainers);
+              console.log('Test mode:', testMode);
+            } catch {
+              console.log('No maintainers.yml found, will use GitHub API fallback');
+            }
+
+            // Helper: get maintainers list
+            async function getMaintainers(excludeUser) {
+              let list = [];
+              if (configMaintainers.length > 0) {
+                list = configMaintainers;
+              } else {
+                try {
+                  const collabs = await github.rest.repos.listCollaborators({
+                    owner, repo, permission: 'push'
+                  });
+                  list = collabs.data.filter(c => !c.login.includes('[bot]')).map(c => c.login);
+                } catch { list = [owner]; }
+              }
+              return excludeUser ? list.filter(m => m !== excludeUser) : list;
+            }
 
             // Get all open PRs
             const prs = await github.paginate(github.rest.pulls.list, {
@@ -194,15 +249,22 @@ jobs:
                 continue; // Already processed
               }
 
-              // Check if author is external
+              // Check if author is external (test_mode treats everyone as external)
               let isMaintainer = false;
-              try {
-                const perm = await github.rest.repos.getCollaboratorPermissionLevel({
-                  owner, repo, username: pr.user.login
-                });
-                isMaintainer = ['admin', 'write'].includes(perm.data.permission);
-              } catch {
+              if (testMode) {
+                console.log(`TEST MODE: treating ${pr.user.login} as external`);
                 isMaintainer = false;
+              } else if (configMaintainers.length > 0) {
+                isMaintainer = configMaintainers.includes(pr.user.login);
+              } else {
+                try {
+                  const perm = await github.rest.repos.getCollaboratorPermissionLevel({
+                    owner, repo, username: pr.user.login
+                  });
+                  isMaintainer = ['admin', 'write'].includes(perm.data.permission);
+                } catch {
+                  isMaintainer = false;
+                }
               }
 
               // Request Copilot review
@@ -242,14 +304,7 @@ jobs:
 
               // Notify maintainers on external PRs
               if (!isMaintainer) {
-                let maintainers = [];
-                try {
-                  const collabs = await github.rest.repos.listCollaborators({
-                    owner, repo, permission: 'push'
-                  });
-                  maintainers = collabs.data.filter(c => !c.login.includes('[bot]') && c.login !== pr.user.login).map(c => c.login);
-                } catch { maintainers = [owner]; }
-
+                const maintainers = await getMaintainers(pr.user.login);
                 const mentions = maintainers.map(m => `@${m}`).join(' ');
 
                 await github.rest.issues.createComment({
