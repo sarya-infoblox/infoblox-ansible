@@ -206,7 +206,7 @@ jobs:
             let configMaintainers = [];
             let testMode = false;
             try {
-              const yaml = fs.readFileSync('.github/maintainers.yml', 'utf8');
+              const yaml = fs.readFileSync('.github/workflows/maintainers.yml', 'utf8');
               const matches = [...yaml.matchAll(/- github:\s*(\S+)/g)];
               configMaintainers = matches.map(m => m[1]);
               testMode = yaml.includes('test_mode: true');
