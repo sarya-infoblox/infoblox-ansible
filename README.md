@@ -213,7 +213,7 @@ Please refer to our Ansible [deployment guide](https://docs.infoblox.com/space/n
 
 ### 7. Next Available Functionality
 
-**Description:** Retrieve the next available IP Address or network in a specified range or network.
+**Description:** Retrieve the next available IP address or network in a specified range or network.
 
 **Example:**
 ```yaml
