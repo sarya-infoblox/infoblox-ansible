@@ -24,6 +24,9 @@ jobs:
   review-and-notify:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout for config
+        uses: actions/checkout@v4
+
       # ─── Step 1: Detect contributor type ───
       - name: Check if author is maintainer
         id: check-author
@@ -31,22 +34,52 @@ jobs:
         with:
           github-token: ${{ secrets.COPILOT_PAT }}
           script: |
+            const fs = require('fs');
             const prAuthor = context.payload.pull_request.user.login;
 
-            // Get collaborators with write or admin access
-            let isMaintainer = false;
+            // ── Check test_mode from maintainers.yml ──
+            let testMode = false;
+            let configMaintainers = [];
             try {
-              const permission = await github.rest.repos.getCollaboratorPermissionLevel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                username: prAuthor
-              });
-              const level = permission.data.permission;
-              isMaintainer = ['admin', 'write'].includes(level);
-              console.log(`${prAuthor} has ${level} access → isMaintainer: ${isMaintainer}`);
-            } catch (error) {
-              console.log(`Could not check permissions for ${prAuthor}: ${error.message}`);
-              isMaintainer = false;
+              const yaml = fs.readFileSync('.github/maintainers.yml', 'utf8');
+              testMode = yaml.includes('test_mode: true');
+              const matches = [...yaml.matchAll(/- github:\s*(\S+)/g)];
+              configMaintainers = matches.map(m => m[1]);
+              console.log(`test_mode: ${testMode}, maintainers from config: ${configMaintainers}`);
+            } catch {
+              console.log('No maintainers.yml found, using default behavior');
+            }
+
+            // ── In test_mode, treat ALL PRs as external ──
+            if (testMode) {
+              console.log(`TEST MODE: treating ${prAuthor} as external contributor`);
+              core.setOutput('is_maintainer', 'false');
+              core.setOutput('pr_author', prAuthor);
+              return;
+            }
+
+            // ── Normal mode: check GitHub permissions ──
+            let isMaintainer = false;
+
+            // First check maintainers.yml list
+            if (configMaintainers.length > 0) {
+              isMaintainer = configMaintainers.includes(prAuthor);
+              console.log(`${prAuthor} in maintainers.yml: ${isMaintainer}`);
+            } else {
+              // Fallback to GitHub API
+              try {
+                const permission = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  username: prAuthor
+                });
+                const level = permission.data.permission;
+                isMaintainer = ['admin', 'write'].includes(level);
+                console.log(`${prAuthor} has ${level} access → isMaintainer: ${isMaintainer}`);
+              } catch (error) {
+                console.log(`Could not check permissions for ${prAuthor}: ${error.message}`);
+                isMaintainer = false;
+              }
             }
 
             core.setOutput('is_maintainer', isMaintainer ? 'true' : 'false');
@@ -152,19 +185,27 @@ jobs:
             const stats = JSON.parse('${{ steps.pr-details.outputs.stats }}'.replace(/'/g, "\\'"));
             const prAuthor = '${{ steps.check-author.outputs.pr_author }}';
 
-            // Get maintainers
+            // Get maintainers from .github/maintainers.yml (or fallback to API)
+            const fs = require('fs');
             let maintainers = [];
             try {
-              const collabs = await github.rest.repos.listCollaborators({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                permission: 'push'
-              });
-              maintainers = collabs.data
-                .filter(c => !c.login.includes('[bot]') && c.login !== prAuthor)
-                .map(c => c.login);
-            } catch (error) {
-              maintainers = [context.repo.owner];
+              const yaml = fs.readFileSync('.github/maintainers.yml', 'utf8');
+              const matches = [...yaml.matchAll(/- github:\s*(\S+)/g)];
+              maintainers = matches.map(m => m[1]).filter(m => m !== prAuthor);
+              console.log('Loaded maintainers from config:', maintainers);
+            } catch {
+              try {
+                const collabs = await github.rest.repos.listCollaborators({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  permission: 'push'
+                });
+                maintainers = collabs.data
+                  .filter(c => !c.login.includes('[bot]') && c.login !== prAuthor)
+                  .map(c => c.login);
+              } catch (error) {
+                maintainers = [context.repo.owner];
+              }
             }
 
             const mentions = maintainers.map(m => `@${m}`).join(' ');
