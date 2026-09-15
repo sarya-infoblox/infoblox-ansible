@@ -1,0 +1,430 @@
+# RepoSherlock — issues and pull requests. See .github/SETUP.md
+#
+# Required secret:  GEMINI_API_KEY
+# Optional secrets: COPILOT_PAT, MAIL_USERNAME, MAIL_PASSWORD
+# Config:           .github/maintainers.yml (see the .template)
+#
+# Every optional part degrades to a skipped step, so a fork that sets only
+# GEMINI_API_KEY still runs green.
+
+name: "🔍 RepoSherlock"
+
+on:
+  issues:
+    types: [opened]
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+jobs:
+  # ─── Read .github/maintainers.yml once, share with both jobs ───
+  config:
+    runs-on: ubuntu-latest
+    outputs:
+      copilot_enabled: ${{ steps.cfg.outputs.copilot_enabled }}
+      email_enabled: ${{ steps.cfg.outputs.email_enabled }}
+      smtp_server: ${{ steps.cfg.outputs.smtp_server }}
+      smtp_port: ${{ steps.cfg.outputs.smtp_port }}
+      maintainers: ${{ steps.cfg.outputs.maintainers }}
+      emails: ${{ steps.cfg.outputs.emails }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github
+
+      - id: cfg
+        env:
+          # Secrets cannot be used in an `if:`, so presence becomes a string.
+          HAS_COPILOT_PAT: ${{ secrets.COPILOT_PAT != '' }}
+          HAS_MAIL: ${{ secrets.MAIL_USERNAME != '' && secrets.MAIL_PASSWORD != '' }}
+        run: |
+          set -euo pipefail
+          F=.github/maintainers.yml
+          [ -f "$F" ] || echo "::notice::no maintainers.yml; using defaults"
+          read_key() {  # key, default -> first value, or the default
+            v=$(grep -E "^[[:space:]]*$1:" "$F" 2>/dev/null | head -1 \
+                | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '"'"'"' \r')
+            [ -n "${v:-}" ] && echo "$v" || echo "$2"
+          }
+          list() {      # key -> every value, comma separated
+            grep -oE "^[[:space:]]*$1:[[:space:]]*\S+" "$F" 2>/dev/null \
+              | sed -E 's/.*:[[:space:]]*//' | paste -sd, - || true
+          }
+
+          COPILOT=$(read_key copilot_enabled false | tr '[:upper:]' '[:lower:]')
+          EMAIL=$(read_key email_enabled false | tr '[:upper:]' '[:lower:]')
+          # Both switches need their credentials, or the step would fail rather
+          # than skip.
+          [ "$COPILOT" = "true" ] && [ "$HAS_COPILOT_PAT" != "true" ] && {
+            echo "::notice::copilot_enabled is true but COPILOT_PAT is unset; skipping Copilot"
+            COPILOT=false; }
+          [ "$EMAIL" = "true" ] && [ "$HAS_MAIL" != "true" ] && {
+            echo "::warning::email_enabled is true but MAIL_USERNAME/MAIL_PASSWORD are unset; skipping email"
+            EMAIL=false; }
+
+          {
+            echo "copilot_enabled=$COPILOT"
+            echo "email_enabled=$EMAIL"
+            echo "smtp_server=$(read_key smtp_server "$(read_key email_smtp_server smtp.office365.com)")"
+            echo "smtp_port=$(read_key smtp_port "$(read_key email_smtp_port 587)")"
+            echo "maintainers=$(list '- github')"
+            echo "emails=$(list 'email')"
+          } >> "$GITHUB_OUTPUT"
+
+  # ─── Issues ───
+  handle-issue:
+    if: github.event_name == 'issues'
+    needs: config
+    runs-on: ubuntu-latest
+    steps:
+      # Checked before any Docker work: a missing key otherwise surfaces three
+      # minutes in, after the image is built and the docs are indexed.
+      #
+      # Triage, labelling and notification need no model, so a missing key
+      # degrades rather than fails here — the issue still gets sorted and the
+      # maintainers still hear about it. handle-pr fails outright instead: a
+      # pull request review with no model is nothing at all.
+      - name: Check for API key
+        id: secrets
+        shell: bash
+        env:
+          KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::warning::GEMINI_API_KEY is not set — triaging and labelling only. Add it under Settings → Secrets → Actions to enable answers and investigations. See .github/SETUP.md"
+            echo "ai_available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ai_available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Triage
+        id: triage
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const t = context.payload.issue.title.toLowerCase();
+            const b = (context.payload.issue.body || '').toLowerCase();
+            const text = `${t} ${b}`;
+            let category = 'bug';
+            if (/\bhow\b|\bwhat\b|\bwhere\b|\bwhy\b|\bcan i\b|\?/.test(text)) category = 'question';
+            else if (/\bfeature\b|\benhance\b|\brequest\b|\badd\b|\bsupport\b/.test(text)) category = 'enhancement';
+            core.setOutput('category', category);
+
+      - name: Label
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const category = '${{ steps.triage.outputs.category }}';
+            const colors = { question: 'd876e3', bug: 'd73a4a', enhancement: 'a2eeef' };
+            try {
+              await github.rest.issues.getLabel({ ...context.repo, name: category });
+            } catch {
+              await github.rest.issues.createLabel({
+                ...context.repo, name: category, color: colors[category] || '333333' });
+            }
+            await github.rest.issues.addLabels({
+              ...context.repo, issue_number: context.issue.number,
+              labels: [category] });
+
+      # ── Questions are answered from the indexed documentation ──
+      - name: Checkout
+        if: steps.secrets.outputs.ai_available == 'true'
+        uses: actions/checkout@v4
+
+      - name: Start RepoSherlock
+        if: steps.secrets.outputs.ai_available == 'true'
+        id: sherlock
+        continue-on-error: true
+        uses: ./.github/actions/reposherlock
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          github_token: ${{ github.token }}
+
+      - name: Ask RepoSherlock
+        if: steps.triage.outputs.category == 'question' && steps.sherlock.outcome == 'success'
+        id: answer
+        continue-on-error: true
+        env:
+          # Via the environment, never string interpolation: issue text is
+          # attacker-controlled and would otherwise break out of the shell.
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          jq -n --arg t "$ISSUE_TITLE" --arg b "${ISSUE_BODY:-}" '{title:$t, body:$b}' > /tmp/q.json
+          curl -fsS --max-time 60 -X POST http://localhost:8000/github/answer-question \
+            -H 'Content-Type: application/json' -d @/tmp/q.json > /tmp/a.json
+          jq -r '.comment_body // ""' /tmp/a.json > /tmp/comment.md
+          echo "coverage=$(jq -r '.coverage // "unknown"' /tmp/a.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Post answer
+        if: steps.triage.outputs.category == 'question' && steps.answer.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const coverage = '${{ steps.answer.outputs.coverage }}';
+            const body = fs.readFileSync('/tmp/comment.md', 'utf8').trim();
+            const issue_number = context.issue.number;
+            // A re-run must update its own comment, not stack another.
+            // Matched on the literal footer, which is a markdown link:
+            // "Generated by RepoSherlock" is NOT a substring of
+            // "Generated by [RepoSherlock](...)".
+            async function postOrUpdate(issue_number, body) {
+              const existing = await github.paginate(github.rest.issues.listComments,
+                { ...context.repo, issue_number, per_page: 100 });
+              const mine = existing.find(c =>
+                c.user && c.user.type === 'Bot' &&
+                c.body && c.body.includes('Generated by [RepoSherlock]'));
+              if (mine) {
+                await github.rest.issues.updateComment({
+                  ...context.repo, comment_id: mine.id, body });
+                core.notice('Updated the existing RepoSherlock comment');
+              } else {
+                await github.rest.issues.createComment({
+                  ...context.repo, issue_number, body });
+                core.notice('Posted a new RepoSherlock comment');
+              }
+            }
+            if (body) await postOrUpdate(issue_number, body);
+            const label = coverage === 'fully_covered' ? 'ai-answered'
+                        : coverage === 'partially_covered' ? 'partial-answer' : 'needs-human';
+            await github.rest.issues.addLabels({ ...context.repo, issue_number, labels: [label] });
+            // Only a fully covered question is actually resolved.
+            if (coverage === 'fully_covered') {
+              await github.rest.issues.update({
+                ...context.repo, issue_number, state: 'closed', state_reason: 'completed' });
+            }
+
+      # ── Bugs and enhancements get an investigation, but no verdict on
+      #    the issue itself ──
+      - name: Investigate issue
+        if: steps.triage.outputs.category != 'question' && steps.sherlock.outcome == 'success'
+        id: investigate
+        continue-on-error: true
+        env:
+          # Via the environment, never string interpolation: issue text is
+          # attacker-controlled and would otherwise break out of the shell.
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          jq -n --arg t "$ISSUE_TITLE" --arg b "${ISSUE_BODY:-}" '{title:$t, body:$b}' > /tmp/bug.json
+          curl -fsS --max-time 120 -X POST http://localhost:8000/github/answer-question \
+            -H 'Content-Type: application/json' -d @/tmp/bug.json > /tmp/bug-out.json
+          jq -r '.comment_body // ""' /tmp/bug-out.json > /tmp/investigation.md
+
+      - name: Post investigation
+        if: steps.triage.outputs.category != 'question' && steps.investigate.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('/tmp/investigation.md', 'utf8').trim();
+            // A re-run must update its own comment, not stack another.
+            // Matched on the literal footer, which is a markdown link:
+            // "Generated by RepoSherlock" is NOT a substring of
+            // "Generated by [RepoSherlock](...)".
+            async function postOrUpdate(issue_number, body) {
+              const existing = await github.paginate(github.rest.issues.listComments,
+                { ...context.repo, issue_number, per_page: 100 });
+              const mine = existing.find(c =>
+                c.user && c.user.type === 'Bot' &&
+                c.body && c.body.includes('Generated by [RepoSherlock]'));
+              if (mine) {
+                await github.rest.issues.updateComment({
+                  ...context.repo, comment_id: mine.id, body });
+                core.notice('Updated the existing RepoSherlock comment');
+              } else {
+                await github.rest.issues.createComment({
+                  ...context.repo, issue_number, body });
+                core.notice('Posted a new RepoSherlock comment');
+              }
+            }
+            // Informational only: no ai-answered label, and the issue stays
+            // open. A bug is resolved by a person, not by being explained.
+            if (body) await postOrUpdate(context.issue.number, body);
+
+      - name: Stop RepoSherlock
+        if: always() && steps.sherlock.outcome == 'success'
+        run: docker compose -f docker-compose.ci.yml down -v || true
+
+      # ── Bugs and enhancements go to Copilot, when it is available ──
+      - name: Assign Copilot
+        if: steps.triage.outputs.category != 'question' && needs.config.outputs.copilot_enabled == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT || github.token }}
+          script: |
+            try {
+              await github.rest.issues.addAssignees({
+                ...context.repo, issue_number: context.issue.number, assignees: ['Copilot'] });
+            } catch (e) { core.warning('Copilot assignment failed: ' + e.message); }
+
+      # The fallback for when nothing else commented. An investigation already
+      # states the classification and the cause, so posting the generic triage
+      # notice alongside it would be the same news twice — but a question whose
+      # answer step failed would otherwise get a label and silence.
+      - name: Notify maintainers
+        if: |
+          (steps.triage.outputs.category == 'question' && steps.answer.outcome != 'success') ||
+          (steps.triage.outputs.category != 'question' && steps.investigate.outcome != 'success')
+        uses: actions/github-script@v7
+        env:
+          MAINTAINERS: ${{ needs.config.outputs.maintainers }}
+        with:
+          script: |
+            const category = '${{ steps.triage.outputs.category }}';
+            const mentions = (process.env.MAINTAINERS || '')
+              .split(',').filter(Boolean).map(m => '@' + m).join(' ');
+            await github.rest.issues.createComment({
+              ...context.repo, issue_number: context.issue.number,
+              body: `### 🤖 Issue triaged\n\n**Category:** ${category}\n\n` +
+                    (mentions ? `${mentions} — please take a look.\n` : '') +
+                    `\n---\n*RepoSherlock automation*`
+            });
+
+      - name: Email maintainers
+        if: needs.config.outputs.email_enabled == 'true' && needs.config.outputs.emails != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ needs.config.outputs.smtp_server }}
+          server_port: ${{ needs.config.outputs.smtp_port }}
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: ${{ secrets.MAIL_USERNAME }}
+          to: ${{ needs.config.outputs.emails }}
+          subject: "[${{ github.repository }}] New ${{ steps.triage.outputs.category }}"
+          body: "${{ github.event.issue.title }} — opened by ${{ github.event.issue.user.login }}\n${{ github.event.issue.html_url }}"
+
+  # ─── Pull requests ───
+  handle-pr:
+    if: github.event_name == 'pull_request'
+    needs: config
+    runs-on: ubuntu-latest
+    steps:
+      # First, before any Docker work: a missing key otherwise surfaces three
+      # minutes in, after the image is built and the docs are indexed.
+      - name: Verify required secrets
+        shell: bash
+        env:
+          KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::GEMINI_API_KEY secret is not set. Go to Settings → Secrets → Actions → Add GEMINI_API_KEY. See .github/SETUP.md"
+            exit 1
+          fi
+          echo "::notice::GEMINI_API_KEY is configured"
+
+      - name: Request Copilot review
+        if: needs.config.outputs.copilot_enabled == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT || github.token }}
+          script: |
+            try {
+              await github.rest.pulls.requestReviewers({
+                ...context.repo, pull_number: context.payload.pull_request.number,
+                reviewers: ['Copilot'] });
+            } catch (e) { core.warning('Copilot review request failed: ' + e.message); }
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start RepoSherlock
+        id: sherlock
+        continue-on-error: true
+        uses: ./.github/actions/reposherlock
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          github_token: ${{ github.token }}
+
+      - name: Review PR
+        if: steps.sherlock.outcome == 'success'
+        id: review
+        continue-on-error: true
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          jq -n --arg u "$PR_URL" '{url:$u}' > /tmp/pr.json
+          curl -fsS --max-time 180 -X POST http://localhost:8000/github/review-pr \
+            -H 'Content-Type: application/json' -d @/tmp/pr.json > /tmp/r.json
+          jq -r '.comment_body // ""' /tmp/r.json > /tmp/review.md
+          echo "result=$(jq -r '.overall_result // "reviewed"' /tmp/r.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Post review
+        if: steps.review.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('/tmp/review.md', 'utf8').trim();
+            const issue_number = context.payload.pull_request.number;
+            // A re-run must update its own comment, not stack another.
+            // Matched on the literal footer, which is a markdown link:
+            // "Generated by RepoSherlock" is NOT a substring of
+            // "Generated by [RepoSherlock](...)".
+            async function postOrUpdate(issue_number, body) {
+              const existing = await github.paginate(github.rest.issues.listComments,
+                { ...context.repo, issue_number, per_page: 100 });
+              const mine = existing.find(c =>
+                c.user && c.user.type === 'Bot' &&
+                c.body && c.body.includes('Generated by [RepoSherlock]'));
+              if (mine) {
+                await github.rest.issues.updateComment({
+                  ...context.repo, comment_id: mine.id, body });
+                core.notice('Updated the existing RepoSherlock comment');
+              } else {
+                await github.rest.issues.createComment({
+                  ...context.repo, issue_number, body });
+                core.notice('Posted a new RepoSherlock comment');
+              }
+            }
+            if (body) await postOrUpdate(issue_number, body);
+            // A review that could not complete is not a reviewed pull request.
+            const failed = '${{ steps.review.outputs.result }}' === 'REVIEW_FAILED';
+            await github.rest.issues.addLabels({
+              ...context.repo, issue_number,
+              labels: [failed ? 'needs-review' : 'sherlock-reviewed'] });
+
+      - name: Stop RepoSherlock
+        if: always() && steps.sherlock.outcome == 'success'
+        run: docker compose -f docker-compose.ci.yml down -v || true
+
+      - name: Notify maintainers
+        uses: actions/github-script@v7
+        env:
+          MAINTAINERS: ${{ needs.config.outputs.maintainers }}
+          RESULT: ${{ steps.review.outputs.result }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            // Internal PRs already show up in the team's own notifications.
+            if (['OWNER', 'MEMBER', 'COLLABORATOR'].includes(pr.author_association)) return;
+            const mentions = (process.env.MAINTAINERS || '')
+              .split(',').filter(Boolean).map(m => '@' + m).join(' ');
+            await github.rest.issues.createComment({
+              ...context.repo, issue_number: pr.number,
+              body: `### 🔍 External PR reviewed\n\n**Author:** @${pr.user.login}\n` +
+                    `**Result:** ${process.env.RESULT || 'not available'}\n\n` +
+                    (mentions ? `${mentions} — please take a look.\n` : '') +
+                    `\n---\n*RepoSherlock automation*`
+            });
+
+      - name: Email maintainers
+        if: needs.config.outputs.email_enabled == 'true' && needs.config.outputs.emails != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ needs.config.outputs.smtp_server }}
+          server_port: ${{ needs.config.outputs.smtp_port }}
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          from: ${{ secrets.MAIL_USERNAME }}
+          to: ${{ needs.config.outputs.emails }}
+          subject: "[${{ github.repository }}] PR #${{ github.event.pull_request.number }}"
+          body: "${{ github.event.pull_request.title }} — ${{ steps.review.outputs.result }}\n${{ github.event.pull_request.html_url }}"

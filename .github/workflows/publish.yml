@@ -1,0 +1,40 @@
+# Publishes the image to GHCR so the composite action can pull it instead of
+# building torch on every issue and pull request.
+
+name: "📦 Publish Image"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'frontend/**'
+      - 'Dockerfile'
+      - 'requirements.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/reposherlock:latest
+            ghcr.io/${{ github.repository_owner }}/reposherlock:${{ github.sha }}

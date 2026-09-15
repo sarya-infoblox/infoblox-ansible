@@ -1,0 +1,167 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# RepoSherlock — start on the runner (composite action)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# Why this exists alongside reposherlock-setup.yml:
+#
+#   A reusable *workflow* runs as its own job on its own runner, so a service
+#   it starts is destroyed when that job finishes — a later job cannot curl
+#   localhost:8000. A composite *action* runs inside the caller's job, so the
+#   steps that follow it can reach the service.
+#
+#   Use this when a job needs to query RepoSherlock. Use
+#   reposherlock-setup.yml when a job's whole purpose is to build and index.
+#
+# Requires: GEMINI_API_KEY passed as an input (actions cannot read secrets).
+
+name: "Start RepoSherlock"
+description: "Build and start RepoSherlock with Qdrant on the runner, and index the docs folder"
+
+inputs:
+  gemini_api_key:
+    description: "Google Gemini API key"
+    required: true
+  docs_path:
+    description: "Folder whose documents are indexed for retrieval"
+    required: false
+    default: "docs"
+  gemini_model:
+    description: "Gemini model id"
+    required: false
+    default: "gemini-3.5-flash-lite"
+  github_token:
+    description: "Token the app uses for its own GitHub reads (optional)"
+    required: false
+    default: ""
+  knowledge_enabled:
+    description: >
+      Whether reviews and answers are enriched with the documents in
+      docs_path. "on" or "off". There is no separate switch for the
+      automation: get_domain_context() gates every caller on this value, and
+      the image carries no .env to fall back on.
+    required: false
+    default: "on"
+
+outputs:
+  url:
+    description: "Base URL of the running instance"
+    value: ${{ steps.health.outputs.url }}
+  documents_indexed:
+    description: "Number of documents indexed"
+    value: ${{ steps.index.outputs.indexed }}
+
+runs:
+  using: composite
+  steps:
+    # Pull first: building from source installs torch and downloads the
+    # embedding model on every run. Falls back to a source build so a repo
+    # that has not published an image yet behaves exactly as before.
+    #
+    # gemini_model and github_token are passed through in both paths — they
+    # are declared inputs, and dropping them from the pull path would make
+    # them silently do nothing.
+    - name: Start RepoSherlock
+      shell: bash
+      env:
+        GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
+        GEMINI_MODEL: ${{ inputs.gemini_model }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        KNOWLEDGE_ENABLED: ${{ inputs.knowledge_enabled }}
+        REPO_OWNER: ${{ github.repository_owner }}
+      run: |
+        set -euo pipefail
+        IMAGE="ghcr.io/${REPO_OWNER}/reposherlock:latest"
+
+        if docker pull "$IMAGE" 2>/dev/null; then
+          echo "::notice::Using pre-built image from GHCR"
+
+          docker network create sherlock-net 2>/dev/null || true
+
+          docker run -d --name sherlock-qdrant \
+            --network sherlock-net \
+            -p 6333:6333 \
+            qdrant/qdrant:latest
+
+          docker run -d --name sherlock-app \
+            --network sherlock-net \
+            -p 8000:8000 \
+            -e GEMINI_API_KEY="${GEMINI_API_KEY}" \
+            -e GEMINI_MODEL="${GEMINI_MODEL}" \
+            -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
+            -e QDRANT_HOST=sherlock-qdrant \
+            -e QDRANT_PORT=6333 \
+            -e KNOWLEDGE_ENABLED="${KNOWLEDGE_ENABLED}" \
+            -e REPOSHERLOCK_TLS=off \
+            "$IMAGE"
+        else
+          echo "::notice::GHCR image not available — building from source"
+
+          # An override rather than an edit: docker-compose.ci.yml forwards
+          # only the variables named in its own environment block, and adding
+          # one there would mean changing a tracked file. Merging an override
+          # keeps both start paths on the same setting.
+          #
+          # printf, not a heredoc: this sits inside an if-branch, so the
+          # terminator is indented, and a plain << delimiter must start at
+          # column zero. <<- would not help either — it strips tabs, not
+          # spaces.
+          printf 'services:\n  app:\n    environment:\n      KNOWLEDGE_ENABLED: "%s"\n' \
+            "$KNOWLEDGE_ENABLED" > /tmp/rs-knowledge.yml
+
+          # --wait blocks on the compose healthchecks, so this returns only
+          # once the embedding model has finished loading.
+          if [ -f docker-compose.ci.yml ]; then
+            docker compose -f docker-compose.ci.yml -f /tmp/rs-knowledge.yml \
+              up -d --build --wait
+          else
+            docker compose -f docker-compose.yml -f /tmp/rs-knowledge.yml \
+              up -d --build --wait
+          fi
+        fi
+
+    - name: Wait for /health
+      id: health
+      shell: bash
+      run: |
+        set -euo pipefail
+        for attempt in $(seq 1 60); do
+          if curl -fsS --max-time 5 http://localhost:8000/health > /tmp/rs_health.json; then
+            echo "healthy after ${attempt} attempt(s): $(cat /tmp/rs_health.json)"
+            echo "url=http://localhost:8000" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "::error::RepoSherlock did not become healthy within 120s"
+        # Whichever path started it: compose prints nothing for containers
+        # started with docker run, and vice versa.
+        docker logs --tail 80 sherlock-app 2>/dev/null || true
+        docker logs --tail 20 sherlock-qdrant 2>/dev/null || true
+        docker compose -f docker-compose.ci.yml logs --tail 80 2>/dev/null || true
+        exit 1
+
+    - name: Index documentation
+      id: index
+      shell: bash
+      env:
+        DOCS_PATH: ${{ inputs.docs_path }}
+      run: |
+        set -euo pipefail
+        count=0
+        if [ -d "$DOCS_PATH" ]; then
+          while IFS= read -r -d '' file; do
+            if curl -fsS --max-time 180 -X POST http://localhost:8000/docs/upload \
+                 -F "file=@${file}" > /tmp/rs_upload.json; then
+              echo "indexed: $(basename "$file") -> $(cat /tmp/rs_upload.json)"
+              count=$((count + 1))
+            else
+              echo "::warning::failed to index $(basename "$file")"
+            fi
+          done < <(find "$DOCS_PATH" -type f \
+                     \( -iname '*.pdf' -o -iname '*.md' -o -iname '*.txt' -o -iname '*.log' \) \
+                     ! -iname 'README.md' -print0)
+        else
+          echo "::notice::no docs folder at ${DOCS_PATH}; RepoSherlock will answer nothing"
+        fi
+        echo "indexed=${count}" >> "$GITHUB_OUTPUT"
+        echo "documents indexed: ${count}"

@@ -1,0 +1,23 @@
+# RepoSherlock Configuration
+# Copy to .github/maintainers.yml and customize.
+#
+# Every setting is optional — without this file the automation runs with
+# Copilot and email off, and a 14-day stale threshold.
+
+# Copilot: set to false if you don't have GitHub Copilot.
+# Also needs a COPILOT_PAT secret; without it the Copilot steps are skipped.
+copilot_enabled: true
+
+# Email notifications. Needs MAIL_USERNAME and MAIL_PASSWORD secrets.
+email_enabled: false
+smtp_server: smtp.office365.com
+smtp_port: 587
+
+# Backlog sweep: days of inactivity before an item is marked stale.
+stale_days: 14
+
+# Maintainers: mentioned on triaged issues and external PRs.
+# `email` is only used when email_enabled is true.
+maintainers:
+  - github: your-username
+    email: your-email@company.com
